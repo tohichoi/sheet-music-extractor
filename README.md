@@ -38,9 +38,8 @@ Follow these easy steps to get the project running on your local machine.
 ### 1. Clone the Repository
 Open your terminal or command prompt and run:
 ```bash
-git clone [https://github.com/yourusername/sheet-music-extractor.git](https://github.com/yourusername/sheet-music-extractor.git)
+git clone https://github.com/yourusername/sheet-music-extractor.git
 cd sheet-music-extractor
-
 ```
 
 ### 2. Backend Setup (FastAPI)
@@ -89,7 +88,6 @@ npm install
 
 # Start the development server
 npm run dev
-
 ```
 
 *The frontend will now be running at `http://localhost:5173`. Open this link in your browser to start extracting!*
