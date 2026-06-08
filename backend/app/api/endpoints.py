@@ -11,11 +11,37 @@ from app.schemas.video import VideoResponse
 from app.services.extractor import process_video_background
 from PIL import Image # ✅ Pillow 이미지 모듈 추가
 import cv2  # ✅ OpenCV 임포트 추가
+import numpy as np # ✅ NumPy 임포트 추가
 
 
 router = APIRouter()
 VIDEO_DIR = "./storage/videos"
 os.makedirs(VIDEO_DIR, exist_ok=True)
+
+
+def trim_white_margin(image: Image.Image, tol=240):
+    """
+    이미지의 가장자리에서 흰색 여백을 제거합니다.
+    tol: 흰색으로 간주할 밝기 값 (0-255, 클수록 더 많은 영역을 흰색으로 간주)
+    """
+    # Pillow 이미지를 OpenCV 형식(numpy)으로 변환
+    img_cv = np.array(image.convert('L')) # 흑백 변환
+    
+    # 마스크 생성: 픽셀 값이 tol보다 작으면(어두우면) True
+    mask = img_cv < tol
+    
+    # 내용물이 있는 영역의 좌표 찾기
+    coords = np.argwhere(mask)
+    if coords.size == 0:
+        return image # 내용이 없으면 원본 반환
+        
+    y0, x0 = coords.min(axis=0)
+    y1, x1 = coords.max(axis=0) + 1
+    
+    # 여백 잘라내기
+    trimmed_img = image.crop((x0, y0, x1, y1))
+    return trimmed_img
+
 
 @router.post("/upload", response_model=VideoResponse)
 async def upload_video(
@@ -101,35 +127,43 @@ def export_keyframes_to_pdf(video_id: int, db: Session = Depends(get_db)):
 
     A4_WIDTH = 1240
     A4_HEIGHT = 1754
+    OUTER_MARGIN = 50 # 외곽 여백
+    INNER_MARGIN = 10  # 이미지 간 간격
     
-    # 이미지들을 PIL Image 객체로 로드
-    image_list = []
+    CONTENT_WIDTH = A4_WIDTH - (2 * OUTER_MARGIN)
+    
+    pdf_pages = []
+    
+    # 1. 모든 이미지를 열고, A4 가로 너비에 맞춰 높이를 조정
+    processed_images = []
     for kf in video.keyframes:
-        img_path = kf.image_filepath
-        if os.path.exists(img_path):
-            img = Image.open(img_path).convert('RGB')
+        if os.path.exists(kf.image_filepath):
+            img = Image.open(kf.image_filepath).convert('RGB')
+            img = trim_white_margin(img)
+            # 가로 너비를 A4 가로 너비로 맞춤
+            ratio = CONTENT_WIDTH / img.width
+            new_height = int(img.height * ratio)
+            processed_images.append(img.resize((CONTENT_WIDTH, new_height)))
+
+    # 2. 이미지를 페이지에 채우기
+    current_page = Image.new('RGB', (A4_WIDTH, A4_HEIGHT), 'white')
+    current_y = OUTER_MARGIN
+    
+    for img in processed_images:
+        # 이미지가 페이지를 넘어서는지 확인
+        if current_y + img.height > A4_HEIGHT - OUTER_MARGIN:
+            pdf_pages.append(current_page) # 현재 페이지 완성
+            current_page = Image.new('RGB', (A4_WIDTH, A4_HEIGHT), 'white') # 새 페이지
+            current_y = OUTER_MARGIN
             
-            # 1. A4 가로 너비에 맞춰 원본 이미지 크기 조절 (비율 유지)
-            aspect_ratio = img.height / img.width
-            new_width = A4_WIDTH
-            new_height = int(A4_WIDTH * aspect_ratio)
-            img_resized = img.resize((new_width, new_height))
+        # 페이지에 이미지 붙이기
+        current_page.paste(img, (OUTER_MARGIN, current_y))
+        current_y += img.height + INNER_MARGIN
+        
+    pdf_pages.append(current_page) # 마지막 페이지 추가
 
-            # 2. 하얀색 바탕의 A4 세로 캔버스 생성
-            a4_canvas = Image.new('RGB', (A4_WIDTH, A4_HEIGHT), 'white')
+    # PDF 저장
+    if pdf_pages:
+        pdf_pages[0].save(pdf_path, save_all=True, append_images=pdf_pages[1:], resolution=300.0, dpi=(300, 300))
 
-            # 3. 캔버스 중앙에 크기를 조절한 악보 이미지 붙이기
-            y_offset = (A4_HEIGHT - new_height) // 2 # 세로 중앙 정렬
-            a4_canvas.paste(img_resized, (0, y_offset))
-
-            # 4. 완성된 A4 캔버스를 리스트에 추가
-            image_list.append(a4_canvas)
-
-    if not image_list:
-        raise HTTPException(status_code=404, detail="Image files not found on disk")
-
-    # 첫 번째 이미지를 기준으로 나머지 이미지를 뒤에 붙여서 PDF로 저장
-    image_list[0].save(pdf_path, save_all=True, append_images=image_list[1:])
-
-    # 생성된 PDF 파일을 클라이언트로 전송
     return FileResponse(path=pdf_path, filename=pdf_filename, media_type='application/pdf')
