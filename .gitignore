@@ -4,3 +4,14 @@ frontend/node_modules/
 __pycache__/
 *.pyc
 .env
+
+# Frontend build and cache
+/frontend/dist/
+/frontend/.cache/
+/frontend/.env
+/frontend/.env.*.local
+/frontend/public/data/
+
+# Ignore frontend lockfiles and build outputs
+/frontend/yarn-error.log*
+/frontend/pnpm-debug.log*

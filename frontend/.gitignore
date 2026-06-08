@@ -22,3 +22,37 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Environment files
+.env
+.env.*.local
+.env.local
+
+# Build / cache
+.cache
+.parcel-cache
+.vite
+.turbo
+dist
+out
+.next
+.nuxt
+
+# Coverage
+coverage
+
+# Yarn v2+ cache and releases
+.yarn/*
+!.yarn/releases
+!.yarn/plugins
+!.yarn/patches
+!.yarn/sdks
+!.yarn/versions
+
+# Misc
+.pnp.*
+.cache-loader
+
+# Generated data
+public/data/
+
