@@ -18,13 +18,9 @@ Have you ever watched a beautiful piano cover or sheet music video on YouTube an
 
 ## 📸 Screenshots
 
-![Upload and Processing Phase](./screenshots/screenshot1.png)
-*Caption: Uploading a video and tracking the background extraction progress in real-time.*
+<img src="./screenshots/screenshot1.png" width="720">
 
-![Extracted Gallery and PDF Export](./screenshots/screenshot2.png)
-*Caption: Viewing extracted keyframes in a grid layout and exporting them to a PDF.*
-
-*(Note: Create a `screenshots` folder in your repository and upload your actual image files named `screenshot1.png` and `screenshot2.png`)*
+*Caption: Uploading a video and tracking the background extraction progress in real-time. Viewing extracted keyframes in a grid layout and exporting them to a PDF.*
 
 ## 🚀 How to Run (Step-by-Step Guide)
 
