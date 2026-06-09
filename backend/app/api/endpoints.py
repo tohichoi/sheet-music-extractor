@@ -4,6 +4,7 @@ import shutil
 import hashlib
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse # ✅ FileResponse 추가
+from fastapi import Query
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.models.video import Video
@@ -105,7 +106,15 @@ def get_video_status(video_id: int, db: Session = Depends(get_db)):
     return video
 
 @router.get("/{video_id}/pdf")
-def export_keyframes_to_pdf(video_id: int, db: Session = Depends(get_db)):
+def export_keyframes_to_pdf(
+    video_id: int, 
+    db: Session = Depends(get_db),
+    marginTop: int = Query(50),
+    marginBottom: int = Query(50),
+    marginLeft: int = Query(20),
+    marginRight: int = Query(20),
+    innerMargin: int = Query(20)
+):
     """추출된 키프레임 이미지들을 모아 하나의 PDF로 병합하여 반환합니다."""
     video = db.query(Video).filter(Video.id == video_id).first()
     if not video:
@@ -127,10 +136,9 @@ def export_keyframes_to_pdf(video_id: int, db: Session = Depends(get_db)):
 
     A4_WIDTH = 1240
     A4_HEIGHT = 1754
-    OUTER_MARGIN = 50 # 외곽 여백
-    INNER_MARGIN = 10  # 이미지 간 간격
     
-    CONTENT_WIDTH = A4_WIDTH - (2 * OUTER_MARGIN)
+    # CONTENT_WIDTH = A4_WIDTH - (2 * OUTER_MARGIN)
+    CONTENT_WIDTH = A4_WIDTH - (marginLeft + marginRight)
     
     pdf_pages = []
     
@@ -147,18 +155,19 @@ def export_keyframes_to_pdf(video_id: int, db: Session = Depends(get_db)):
 
     # 2. 이미지를 페이지에 채우기
     current_page = Image.new('RGB', (A4_WIDTH, A4_HEIGHT), 'white')
-    current_y = OUTER_MARGIN
+    # current_y = OUTER_MARGIN
+    current_y = marginTop
     
     for img in processed_images:
         # 이미지가 페이지를 넘어서는지 확인
-        if current_y + img.height > A4_HEIGHT - OUTER_MARGIN:
+        if current_y + img.height > A4_HEIGHT - marginBottom:
             pdf_pages.append(current_page) # 현재 페이지 완성
             current_page = Image.new('RGB', (A4_WIDTH, A4_HEIGHT), 'white') # 새 페이지
-            current_y = OUTER_MARGIN
+            current_y = marginTop
             
         # 페이지에 이미지 붙이기
-        current_page.paste(img, (OUTER_MARGIN, current_y))
-        current_y += img.height + INNER_MARGIN
+        current_page.paste(img, (marginLeft, current_y))
+        current_y += img.height + innerMargin
         
     pdf_pages.append(current_page) # 마지막 페이지 추가
 

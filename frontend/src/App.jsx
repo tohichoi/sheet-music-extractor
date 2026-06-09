@@ -1,38 +1,54 @@
 import { useState, useEffect } from 'react';
 
 function App() {
-  const [status, setStatus] = useState('Waiting...');
+  const [isDarkMode, setIsDarkMode] = useState(false);
+  
+  const [status, setStatus] = useState('대기 중');
   const [videoInfo, setVideoInfo] = useState(null);
-  const [selectedImage, setSelectedImage] = useState(null);
-  const [thumbSize, setThumbSize] = useState(200);
+  const [selectedImage, setSelectedImage] = useState(null); 
+  const [thumbSize, setThumbSize] = useState(250); 
+
+  const [marginTop, setMarginTop] = useState(50);
+  const [marginBottom, setMarginBottom] = useState(50);
+  const [marginLeft, setMarginLeft] = useState(50);
+  const [marginRight, setMarginRight] = useState(50);
+  const [innerMargin, setInnerMargin] = useState(10);
 
   const API_BASE_URL = 'http://localhost:8000/api/videos';
   const STATIC_BASE_URL = 'http://localhost:8000';
 
-  // Polling logic to periodically check backend status
+  // 🌙 Tailwind 기반 테마 변경 감지 및 적용 (html 태그에 dark 클래스 토글)
+  useEffect(() => {
+    if (isDarkMode) {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+  }, [isDarkMode]);
+
+  // 백엔드 폴링 로직
   useEffect(() => {
     let intervalId;
     const checkProcessingStatus = async () => {
       if (!videoInfo || !videoInfo.id) return;
       try {
         const response = await fetch(`${API_BASE_URL}/${videoInfo.id}`);
-        if (!response.ok) throw new Error('Status fetch failed');
+        if (!response.ok) throw new Error('상태 조회 실패');
         
         const data = await response.json();
         setVideoInfo(data);
 
         if (data.status === 'processing') {
-          // Keep the text stable and omit any percentage display.
-          setStatus('⚙️ Extracting sheet-music keyframes... (background processing)');
+          setStatus('⚙️ 악보 추출 진행 중...');
         } else if (data.status === 'completed') {
-          setStatus('✅ Extraction completed!');
+          setStatus('✅ 추출 완료!');
           clearInterval(intervalId);
         } else if (data.status === 'failed') {
-          setStatus('❌ Extraction failed');
+          setStatus('❌ 추출 실패');
           clearInterval(intervalId);
         }
       } catch (error) {
-        console.error('Error checking status:', error);
+        console.error("상태 확인 중 에러:", error);
       }
     };
 
@@ -45,7 +61,7 @@ function App() {
   }, [videoInfo?.id, videoInfo?.status]);
 
   const uploadVideo = async (fileToUpload) => {
-    setStatus('🚀 Uploading...');
+    setStatus('🚀 업로드 중...');
     const formData = new FormData();
     formData.append('file', fileToUpload);
 
@@ -54,22 +70,17 @@ function App() {
         method: 'POST',
         body: formData,
       });
-      if (!response.ok) throw new Error('Upload failed');
+      if (!response.ok) throw new Error('업로드 실패');
       
       const data = await response.json();
+      if (data.status === 'completed') setStatus('✅ 기존 추출 결과 불러옴');
+      else if (data.status === 'processing') setStatus('⚙️ 악보 추출 진행 중...');
+      else setStatus('📁 업로드 완료 (대기 중)');
       
-      if (data.status === 'completed') {
-        setStatus('✅ Video already processed. Loading existing result.');
-      } else if (data.status === 'processing') {
-        setStatus('⚙️ Extracting sheet-music keyframes... (background processing)');
-      } else {
-        setStatus('📁 Upload complete! Waiting for extraction.');
-      }
-
       setVideoInfo(data);
     } catch (error) {
       console.error(error);
-      setStatus(`Error occurred: ${error.message}`);
+      setStatus(`에러: ${error.message}`);
     }
   };
 
@@ -79,151 +90,182 @@ function App() {
   };
 
   const handleAutoTestUpload = async () => {
-    setStatus('Loading test file...');
+    setStatus('테스트 파일 로딩 중...');
     try {
       const response = await fetch('/data/test_video.webm');
-      if (!response.ok) throw new Error('Test file not found.');
-      
+      if (!response.ok) throw new Error('테스트 파일 없음');
       const blob = await response.blob();
-      const testFile = new File([blob], 'test_video.webm', { type: 'video/webm' });
-      
-      uploadVideo(testFile);
+      uploadVideo(new File([blob], "test_video.webm", { type: "video/webm" }));
     } catch (error) {
       console.error(error);
-      setStatus(`Test file load error: ${error.message}`);
+      setStatus(`테스트 로드 에러: ${error.message}`);
     }
   };
 
   const handleExportPDF = async () => {
     if (!videoInfo || !videoInfo.id) return;
     try {
-      setStatus('📄 Generating and downloading PDF...');
-      const response = await fetch(`${API_BASE_URL}/${videoInfo.id}/pdf`);
-      if (!response.ok) throw new Error('Failed to create PDF.');
+      setStatus('📄 PDF 생성 중...');
+      const queryParams = new URLSearchParams({ marginTop, marginBottom, marginLeft, marginRight, innerMargin }).toString();
+      const response = await fetch(`${API_BASE_URL}/${videoInfo.id}/pdf?${queryParams}`);
+      if (!response.ok) throw new Error('PDF 생성 실패');
 
       const blob = await response.blob();
       const downloadUrl = window.URL.createObjectURL(blob);
-      
       const link = document.createElement('a');
       link.href = downloadUrl;
-      link.download = `sheet_music_video_${videoInfo.id}.pdf`;
+      link.download = `sheet_music_${videoInfo.id}.pdf`;
       document.body.appendChild(link);
       link.click();
-      
       link.remove();
       window.URL.revokeObjectURL(downloadUrl);
       
-      setStatus('✅ PDF download complete!');
+      setStatus('✅ PDF 다운로드 완료!');
     } catch (error) {
-      console.error('PDF Export Error:', error);
-      alert(`Error: ${error.message}`);
-      setStatus('❌ PDF download failed');
+      alert(`오류: ${error.message}`);
+      setStatus('❌ PDF 실패');
     }
   };
 
-  const formatDuration = (seconds) => {
-    if (!seconds) return 'Unknown';
-    const m = Math.floor(seconds / 60);
-    const s = Math.floor(seconds % 60);
-    return `${m}m ${s.toString().padStart(2, '0')}s`;
-  };
+  const formatDuration = (sec) => sec ? `${Math.floor(sec / 60)}분 ${Math.floor(sec % 60).toString().padStart(2, '0')}초` : '-';
+  const formatSize = (bytes) => bytes ? (bytes / (1024 * 1024)).toFixed(2) + ' MB' : '-';
 
-  const formatFileSize = (bytes) => {
-    if (!bytes) return 'Unknown';
-    return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
-  };
+  // 공통 Tailwind 클래스 모음
+  const cardClass = "bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-2xl p-6 mb-6 shadow-sm transition-all duration-300";
+  const btnClass = "inline-flex items-center gap-2 px-5 py-2.5 rounded-xl font-semibold text-sm cursor-pointer transition-all duration-200 hover:-translate-y-0.5 shadow-sm disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:translate-y-0";
+  const inputNumClass = "w-16 px-2 py-1 text-sm border border-slate-300 dark:border-slate-600 rounded-md bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500";
 
   return (
-    <div style={{ padding: '2rem', fontFamily: 'sans-serif', maxWidth: '1000px', margin: '0 auto' }}>
-      <h1>🎵 Sheet Music Keyframe Extractor</h1>
+    <div className="max-w-5xl mx-auto p-6 md:p-10">
       
-      <div style={{ padding: '1rem', background: '#f0f0f0', borderRadius: '8px', marginBottom: '2rem' }}>
-        <h3>🛠️ Quick Test for Development</h3>
+      {/* 헤더 영역 */}
+      <header className="flex justify-between items-center mb-10 pb-5 border-b-2 border-slate-200 dark:border-slate-700">
+        <h1 className="text-3xl font-extrabold tracking-tight bg-gradient-to-r from-blue-600 to-cyan-500 bg-clip-text text-transparent">
+          🎵 Sheet Music Extractor
+        </h1>
         <button 
-          onClick={handleAutoTestUpload}
-          disabled={videoInfo?.status === 'processing'}
-          style={{ padding: '0.5rem 1rem', background: '#007bff', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}
+          onClick={() => setIsDarkMode(!isDarkMode)} 
+          className="w-12 h-12 flex items-center justify-center rounded-full bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 transition-colors text-xl"
+          title="테마 변경"
         >
-          🚀 Upload test video automatically
+          {isDarkMode ? '☀️' : '🌙'}
+        </button>
+      </header>
+      
+      {/* 테스트 업로드 영역 */}
+      <div className={`${cardClass} bg-slate-100/50 dark:bg-slate-800/50`}>
+        <h3 className="text-lg font-bold mb-4 flex items-center gap-2 text-slate-800 dark:text-slate-100">
+          🛠️ 개발용 빠른 테스트
+        </h3>
+        <button 
+          className={`${btnClass} bg-blue-600 hover:bg-blue-700 text-white shadow-blue-500/30`} 
+          onClick={handleAutoTestUpload} 
+          disabled={videoInfo?.status === 'processing'}
+        >
+          🚀 테스트 영상 자동 실행
         </button>
       </div>
 
-      <div style={{ marginBottom: '2rem', padding: '1rem', background: '#f8f9fa', borderRadius: '8px' }}>
-        <h3>📁 Upload Video File</h3>
-        <input type="file" accept="video/*" onChange={handleManualUpload} disabled={videoInfo?.status === 'processing'} />
+      {/* 파일 업로드 및 상태 표시 */}
+      <div className={`${cardClass} ${videoInfo?.status === 'processing' ? 'ring-2 ring-blue-500 shadow-lg shadow-blue-500/10' : ''}`}>
+        <h3 className="text-lg font-bold mb-4 text-slate-800 dark:text-slate-100">📁 동영상 업로드</h3>
+        
+        <input 
+          type="file" 
+          accept="video/*" 
+          onChange={handleManualUpload} 
+          disabled={videoInfo?.status === 'processing'}
+          className="block w-full text-sm text-slate-500 dark:text-slate-400 file:mr-4 file:py-2.5 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 dark:file:bg-slate-700 dark:file:text-blue-400 dark:hover:file:bg-slate-600 transition-all cursor-pointer border border-dashed border-slate-300 dark:border-slate-600 rounded-xl p-4 bg-slate-50 dark:bg-slate-800/50"
+        />
+        
+        <div className="mt-6 p-5 bg-blue-50/50 dark:bg-slate-900/50 rounded-xl border border-blue-100 dark:border-slate-700">
+          <strong className="text-blue-600 dark:text-blue-400 text-lg block mb-2">{status}</strong>
+          
+          {videoInfo?.status === 'processing' && (
+            <div className="w-full h-6 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden mt-3 shadow-inner">
+              <div 
+                className="h-full bg-gradient-to-r from-blue-500 to-cyan-400 flex items-center justify-center text-white text-xs font-bold transition-all duration-500 ease-out" 
+                style={{ width: `${videoInfo.progress || 0}%` }}
+              >
+                {videoInfo.progress || 0}%
+              </div>
+            </div>
+          )}
+        </div>
       </div>
 
+      {/* 비디오 메타데이터 */}
       {videoInfo && videoInfo.width && (
-        <div style={{ marginBottom: '2rem', padding: '1.5rem', background: '#e9ecef', borderRadius: '8px', borderLeft: '5px solid #6c757d' }}>
-          <h3 style={{ marginTop: 0, color: '#495057' }}>📊 Original Video Info</h3>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', fontSize: '0.95rem' }}>
-            <div><strong>Filename:</strong> {videoInfo.original_filename}</div>
-            <div><strong>File size:</strong> {formatFileSize(videoInfo.file_size)}</div>
-            <div><strong>Resolution:</strong> {videoInfo.width} x {videoInfo.height}</div>
-            <div><strong>Duration:</strong> {formatDuration(videoInfo.duration)}</div>
-            <div><strong>Frame rate:</strong> {videoInfo.fps ? videoInfo.fps.toFixed(2) : 'Unknown'} FPS</div>
-            <div><strong>Upload time:</strong> {new Date(videoInfo.upload_time).toLocaleString()}</div>
+        <div className={cardClass}>
+          <h3 className="text-lg font-bold mb-4 text-slate-800 dark:text-slate-100">📊 비디오 메타데이터</h3>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="p-4 bg-slate-50 dark:bg-slate-900 rounded-xl">
+              <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider block mb-1">파일명</span>
+              <span className="font-medium text-slate-800 dark:text-slate-200 truncate block">{videoInfo.original_filename}</span>
+            </div>
+            <div className="p-4 bg-slate-50 dark:bg-slate-900 rounded-xl">
+              <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider block mb-1">파일 크기</span>
+              <span className="font-medium text-slate-800 dark:text-slate-200 block">{formatSize(videoInfo.file_size)}</span>
+            </div>
+            <div className="p-4 bg-slate-50 dark:bg-slate-900 rounded-xl">
+              <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider block mb-1">해상도</span>
+              <span className="font-medium text-slate-800 dark:text-slate-200 block">{videoInfo.width} x {videoInfo.height}</span>
+            </div>
+            <div className="p-4 bg-slate-50 dark:bg-slate-900 rounded-xl">
+              <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider block mb-1">재생 시간</span>
+              <span className="font-medium text-slate-800 dark:text-slate-200 block">{formatDuration(videoInfo.duration)}</span>
+            </div>
           </div>
         </div>
       )}
 
-      {/* 🌟 Status display and progress bar area */}
-      <div style={{ marginTop: '2rem', padding: '1.5rem', border: '2px solid #007bff', borderRadius: '8px', background: '#e9f5ff' }}>
-        <h3 style={{ margin: 0, marginBottom: videoInfo?.status === 'processing' ? '1rem' : '0' }}>
-          <strong>Current status:</strong> {status}
-        </h3>
-        
-        {/* Show a visual progress bar only while processing */}
-        {videoInfo?.status === 'processing' && (
-          <div style={{ width: '100%', background: '#e0e0e0', borderRadius: '12px', overflow: 'hidden', height: '24px', marginTop: '1rem', boxShadow: 'inset 0 1px 3px rgba(0,0,0,0.2)' }}>
-            <div style={{
-              width: `${videoInfo.progress || 0}%`,
-              height: '100%',
-              background: 'linear-gradient(90deg, #4facfe 0%, #00f2fe 100%)', // Nice gradient color
-              transition: 'width 0.5s ease-in-out', // Smooth fill animation
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              color: 'white',
-              fontWeight: 'bold',
-              fontSize: '0.85rem',
-              textShadow: '1px 1px 1px rgba(0,0,0,0.3)'
-            }}>
-              {videoInfo.progress || 0}%
-            </div>
-          </div>
-        )}
-      </div>
-
+      {/* 갤러리 및 PDF 내보내기 영역 */}
       {videoInfo?.status === 'completed' && videoInfo?.keyframes && (
-        <div style={{ marginTop: '2rem' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', paddingBottom: '1rem', borderBottom: '1px solid #ccc' }}>
-            <h3>🖼️ Extracted sheet music ({videoInfo.keyframes.length} frames)</h3>
-            <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
-              <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                🔍 Thumbnail size:
-                <input type="range" min="100" max="400" value={thumbSize} onChange={(e) => setThumbSize(Number(e.target.value))} />
-              </label>
-              <button onClick={handleExportPDF} style={{ padding: '0.5rem 1rem', background: '#28a745', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>
-                📄 Download as PDF bundle
+        <div className={cardClass}>
+          
+          {/* PDF 내보내기 설정 패널 */}
+          <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/30 rounded-xl p-5 mb-8">
+            <h4 className="text-md font-bold mb-4 text-amber-900 dark:text-amber-400">📄 PDF 내보내기 설정</h4>
+            <div className="flex flex-wrap items-center gap-4 text-sm text-slate-700 dark:text-slate-300">
+              <label className="flex items-center gap-2">상단: <input type="number" className={inputNumClass} value={marginTop} onChange={e => setMarginTop(Number(e.target.value))} /> px</label>
+              <label className="flex items-center gap-2">하단: <input type="number" className={inputNumClass} value={marginBottom} onChange={e => setMarginBottom(Number(e.target.value))} /> px</label>
+              <label className="flex items-center gap-2">좌측: <input type="number" className={inputNumClass} value={marginLeft} onChange={e => setMarginLeft(Number(e.target.value))} /> px</label>
+              <label className="flex items-center gap-2">우측: <input type="number" className={inputNumClass} value={marginRight} onChange={e => setMarginRight(Number(e.target.value))} /> px</label>
+              <label className="flex items-center gap-2">간격: <input type="number" className={inputNumClass} value={innerMargin} onChange={e => setInnerMargin(Number(e.target.value))} /> px</label>
+              
+              <button 
+                className={`${btnClass} bg-emerald-500 hover:bg-emerald-600 text-white shadow-emerald-500/30 ml-auto`} 
+                onClick={handleExportPDF}
+              >
+                ⬇️ PDF 다운로드
               </button>
             </div>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: `repeat(auto-fill, minmax(${thumbSize}px, 1fr))`, gap: '1rem' }}>
+          <div className="flex flex-col md:flex-row justify-between items-center mb-6 pb-6 border-b border-slate-200 dark:border-slate-700 gap-4">
+            <h3 className="text-xl font-bold text-slate-800 dark:text-slate-100 m-0">🖼️ 추출된 악보 ({videoInfo.keyframes.length}장)</h3>
+            <label className="flex items-center gap-3 text-sm font-medium text-slate-600 dark:text-slate-400 bg-slate-100 dark:bg-slate-900 px-4 py-2 rounded-lg">
+              🔍 썸네일 크기
+              <input type="range" min="150" max="400" value={thumbSize} onChange={(e) => setThumbSize(Number(e.target.value))} className="accent-blue-500" />
+            </label>
+          </div>
+
+          {/* 반응형 갤러리 그리드 */}
+          <div className="grid gap-6" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${thumbSize}px, 1fr))` }}>
             {videoInfo.keyframes.map((frame, index) => {
               const imageUrl = `${STATIC_BASE_URL}/${frame.image_filepath.replace('./', '')}`;
               return (
                 <div 
                   key={frame.id} 
-                  style={{ border: '1px solid #ddd', borderRadius: '8px', overflow: 'hidden', cursor: 'pointer', transition: 'transform 0.2s' }}
+                  className="group bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl overflow-hidden cursor-pointer hover:-translate-y-1 hover:shadow-lg hover:border-blue-500 dark:hover:border-blue-400 transition-all duration-300"
                   onClick={() => setSelectedImage(imageUrl)}
-                  onMouseOver={(e) => e.currentTarget.style.transform = 'scale(1.02)'}
-                  onMouseOut={(e) => e.currentTarget.style.transform = 'scale(1)'}
                 >
-                  <img src={imageUrl} alt={`Frame ${index + 1}`} style={{ width: '100%', height: 'auto', display: 'block', borderBottom: '1px solid #eee' }} />
-                  <div style={{ padding: '0.5rem', textAlign: 'center', background: '#fafafa', fontSize: '0.9em' }}>
-                    <strong>#{index + 1}</strong> ({frame.timestamp.toFixed(2)}s)
+                  <div className="aspect-video overflow-hidden bg-slate-100 dark:bg-slate-900">
+                    <img src={imageUrl} alt={`Frame ${index + 1}`} loading="lazy" className="w-full h-full object-contain group-hover:scale-105 transition-transform duration-500" />
+                  </div>
+                  <div className="p-3 text-center bg-slate-50 dark:bg-slate-800/80 border-t border-slate-200 dark:border-slate-700">
+                    <span className="text-xs text-slate-500 dark:text-slate-400 font-medium">#{index + 1}</span>
+                    <strong className="block text-slate-800 dark:text-slate-200 text-sm mt-0.5">{frame.timestamp.toFixed(2)}초</strong>
                   </div>
                 </div>
               )
@@ -232,16 +274,25 @@ function App() {
         </div>
       )}
 
+      {/* 이미지 크게 보기 모달 */}
       {selectedImage && (
         <div 
-          style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', background: 'rgba(0,0,0,0.8)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000 }}
+          className="fixed inset-0 bg-slate-900/90 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in duration-200"
           onClick={() => setSelectedImage(null)}
         >
-          <div style={{ position: 'relative', maxWidth: '90%', maxHeight: '90%' }}>
-            <button onClick={() => setSelectedImage(null)} style={{ position: 'absolute', top: '-40px', right: '0', background: 'transparent', color: 'white', border: 'none', fontSize: '2rem', cursor: 'pointer' }}>
+          <div className="relative max-w-[95vw] max-h-[95vh]">
+            <button 
+              onClick={() => setSelectedImage(null)} 
+              className="absolute -top-12 right-0 text-white hover:text-slate-300 text-4xl transition-colors"
+            >
               &times;
             </button>
-            <img src={selectedImage} alt="Enlarged" style={{ maxWidth: '100%', maxHeight: '90vh', objectFit: 'contain', background: 'white' }} onClick={(e) => e.stopPropagation()} />
+            <img 
+              src={selectedImage} 
+              alt="Enlarged" 
+              className="max-w-full max-h-[90vh] object-contain rounded-xl shadow-2xl bg-white dark:bg-slate-900" 
+              onClick={(e) => e.stopPropagation()} 
+            />
           </div>
         </div>
       )}
