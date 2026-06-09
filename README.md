@@ -18,9 +18,14 @@ Have you ever watched a beautiful piano cover or sheet music video on YouTube an
 
 ## 📸 Screenshots
 
+*Uploading a video and tracking the background extraction progress in real-time. Viewing extracted keyframes in a grid layout and exporting them to a PDF.*
+
 <img src="./screenshots/screenshot1.png" width="720">
 
-*Caption: Uploading a video and tracking the background extraction progress in real-time. Viewing extracted keyframes in a grid layout and exporting them to a PDF.*
+*Exported PDF in the form of printer-friendly layout(customizerble paper margins).*
+
+<img src="./screenshots/screenshot2.png" width="720">
+
 
 ## 🚀 How to Run (Step-by-Step Guide)
 
