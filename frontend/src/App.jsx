@@ -1,27 +1,75 @@
 import { useState, useEffect } from 'react';
 
+
+// 🌟 새로 추가: 로컬 스토리지에서 숫자 값을 안전하게 불러오는 헬퍼 함수
+const getSavedNumber = (key, defaultValue) => {
+  const saved = localStorage.getItem(key);
+  // 값이 0인 경우도 정상적인 여백 값일 수 있으므로 null 체크를 명확히 합니다.
+  return saved !== null ? Number(saved) : defaultValue;
+};
+
+
 function App() {
-  const [isDarkMode, setIsDarkMode] = useState(false);
+  // 🌟 변경 전: const [isDarkMode, setIsDarkMode] = useState(false);
+  // 🌟 변경 후: 로컬 스토리지에서 이전 테마 설정 불러오기
+  const [isDarkMode, setIsDarkMode] = useState(() => {
+    const savedTheme = localStorage.getItem('theme');
+    // 사용자의 OS 환경이 기본적으로 다크모드인지 확인하는 로직 추가 가능
+    // 여기서는 저장된 값이 'dark'이면 true, 아니면 false를 반환합니다.
+    return savedTheme === 'dark';
+  });
   
   const [status, setStatus] = useState('대기 중');
   const [videoInfo, setVideoInfo] = useState(null);
   const [selectedImage, setSelectedImage] = useState(null); 
-  const [thumbSize, setThumbSize] = useState(250); 
-
-  const [marginTop, setMarginTop] = useState(50);
-  const [marginBottom, setMarginBottom] = useState(50);
-  const [marginLeft, setMarginLeft] = useState(50);
-  const [marginRight, setMarginRight] = useState(50);
-  const [innerMargin, setInnerMargin] = useState(10);
+  // const [thumbSize, setThumbSize] = useState(250); 
+  const [thumbSize, setThumbSize] = useState(() => getSavedNumber('thumbSize', 250));
+  
+  // const [marginTop, setMarginTop] = useState(50);
+  // const [marginBottom, setMarginBottom] = useState(50);
+  // const [marginLeft, setMarginLeft] = useState(50);
+  // const [marginRight, setMarginRight] = useState(50);
+  // const [innerMargin, setInnerMargin] = useState(10);
+  const [marginTop, setMarginTop] = useState(() => getSavedNumber('marginTop', 50));
+  const [marginBottom, setMarginBottom] = useState(() => getSavedNumber('marginBottom', 50));
+  const [marginLeft, setMarginLeft] = useState(() => getSavedNumber('marginLeft', 50));
+  const [marginRight, setMarginRight] = useState(() => getSavedNumber('marginRight', 50));
+  const [innerMargin, setInnerMargin] = useState(() => getSavedNumber('innerMargin', 10));
 
   const API_BASE_URL = 'http://localhost:8000/api/videos';
   const STATIC_BASE_URL = 'http://localhost:8000';
 
-  // 🌙 Tailwind 기반 테마 변경 감지 및 적용 (html 태그에 dark 클래스 토글)
   useEffect(() => {
     document.documentElement.classList.toggle('dark', isDarkMode);
     document.body.classList.toggle('dark', isDarkMode);
+    
+    // 🌟 새로 추가됨: 변경된 테마를 로컬 스토리지에 저장
+    localStorage.setItem('theme', isDarkMode ? 'dark' : 'light');
   }, [isDarkMode]);
+
+  // 🌟 새로 추가됨: 앱이 처음 켜질 때 로컬 스토리지에서 마지막 작업 비디오 ID를 찾아 불러옴
+  useEffect(() => {
+    const savedVideoId = localStorage.getItem('lastVideoId');
+    if (savedVideoId) {
+      setStatus('🔄 이전 작업 데이터 불러오는 중...');
+      fetch(`${API_BASE_URL}/${savedVideoId}`)
+        .then(res => {
+          if (!res.ok) throw new Error('데이터를 찾을 수 없습니다.');
+          return res.json();
+        })
+        .then(data => {
+          setVideoInfo(data);
+          if (data.status === 'completed') setStatus('✅ 이전 추출 결과 불러옴');
+          else if (data.status === 'processing') setStatus('⚙️ 악보 추출 진행 중...');
+          else setStatus('📁 업로드 대기 중');
+        })
+        .catch(error => {
+          console.error("이전 데이터 로드 실패:", error);
+          localStorage.removeItem('lastVideoId'); // 잘못된 데이터면 삭제
+          setStatus('대기 중');
+        });
+    }
+  }, []);
 
   // 백엔드 폴링 로직
   useEffect(() => {
@@ -57,6 +105,20 @@ function App() {
     };
   }, [videoInfo?.id, videoInfo?.status]);
 
+  // 🌟 새로 추가: 썸네일 크기가 변경될 때마다 로컬 스토리지에 자동 저장
+  useEffect(() => {
+    localStorage.setItem('thumbSize', thumbSize);
+  }, [thumbSize]);
+
+  // 🌟 새로 추가: PDF 설정값이 하나라도 변경될 때마다 로컬 스토리지에 자동 저장
+  useEffect(() => {
+    localStorage.setItem('marginTop', marginTop);
+    localStorage.setItem('marginBottom', marginBottom);
+    localStorage.setItem('marginLeft', marginLeft);
+    localStorage.setItem('marginRight', marginRight);
+    localStorage.setItem('innerMargin', innerMargin);
+  }, [marginTop, marginBottom, marginLeft, marginRight, innerMargin]);
+  
   const uploadVideo = async (fileToUpload) => {
     setStatus('🚀 업로드 중...');
     const formData = new FormData();
@@ -70,11 +132,17 @@ function App() {
       if (!response.ok) throw new Error('업로드 실패');
       
       const data = await response.json();
+      
       if (data.status === 'completed') setStatus('✅ 기존 추출 결과 불러옴');
       else if (data.status === 'processing') setStatus('⚙️ 악보 추출 진행 중...');
       else setStatus('📁 업로드 완료 (대기 중)');
       
       setVideoInfo(data);
+
+      // 🌟 새로 추가됨: 성공적으로 업로드/조회 후 ID를 브라우저에 저장
+      if (data.id) {
+        localStorage.setItem('lastVideoId', data.id);
+      }
     } catch (error) {
       console.error(error);
       setStatus(`에러: ${error.message}`);
@@ -124,6 +192,13 @@ function App() {
     }
   };
 
+  // 🌟 새로 추가됨: 아예 초기화하고 싶을 때 사용하는 함수
+  const handleReset = () => {
+    localStorage.removeItem('lastVideoId');
+    setVideoInfo(null);
+    setStatus('대기 중');
+  };
+
   const formatDuration = (sec) => sec ? `${Math.floor(sec / 60)}분 ${Math.floor(sec % 60).toString().padStart(2, '0')}초` : '-';
   const formatSize = (bytes) => bytes ? (bytes / (1024 * 1024)).toFixed(2) + ' MB' : '-';
 
@@ -150,17 +225,28 @@ function App() {
       </header>
       
       {/* 테스트 업로드 영역 */}
-      <div className={`${cardClass} bg-slate-100/50 dark:bg-slate-800/50`}>
-        <h3 className="text-lg font-bold mb-4 flex items-center gap-2 text-slate-800 dark:text-slate-100">
-          🛠️ 개발용 빠른 테스트
-        </h3>
-        <button 
-          className={`${btnClass} bg-blue-600 hover:bg-blue-700 text-white shadow-blue-500/30`} 
-          onClick={handleAutoTestUpload} 
-          disabled={videoInfo?.status === 'processing'}
-        >
-          🚀 테스트 영상 자동 실행
-        </button>
+      <div className={`${cardClass} bg-slate-100/50 dark:bg-slate-800/50 flex flex-col md:flex-row justify-between items-center gap-4`}>
+        <div>
+          <h3 className="text-lg font-bold mb-2 flex items-center gap-2 text-slate-800 dark:text-slate-100">
+            🛠️ 개발용 빠른 테스트
+          </h3>
+          <p className="text-sm text-slate-500 dark:text-slate-400">새로 업로드하거나, 화면을 초기화할 수 있습니다.</p>
+        </div>
+        <div className="flex gap-3">
+          <button 
+            className={`${btnClass} bg-slate-500 hover:bg-slate-600 text-white shadow-slate-500/30`} 
+            onClick={handleReset}
+          >
+            🔄 새 화면으로 리셋
+          </button>
+          <button 
+            className={`${btnClass} bg-blue-600 hover:bg-blue-700 text-white shadow-blue-500/30`} 
+            onClick={handleAutoTestUpload} 
+            disabled={videoInfo?.status === 'processing'}
+          >
+            🚀 테스트 자동 실행
+          </button>
+        </div>
       </div>
 
       {/* 파일 업로드 및 상태 표시 */}
