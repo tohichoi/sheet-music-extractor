@@ -10,7 +10,7 @@ from app.core.database import get_db
 from app.models.video import Video
 from app.schemas.video import VideoResponse
 from app.services.extractor import process_video_background
-from PIL import Image # ✅ Pillow 이미지 모듈 추가
+from PIL import Image, ImageDraw, ImageFont # ✅ Pillow 이미지 모듈 추가
 import cv2  # ✅ OpenCV 임포트 추가
 import numpy as np # ✅ NumPy 임포트 추가
 
@@ -154,21 +154,49 @@ def export_keyframes_to_pdf(
             processed_images.append(img.resize((CONTENT_WIDTH, new_height)))
 
     # 2. 이미지를 페이지에 채우기
+    def add_page_number(page: Image.Image, page_number: int):
+        draw = ImageDraw.Draw(page)
+        font_size = 24
+        try:
+            font = ImageFont.truetype("arial.ttf", font_size)
+        except Exception:
+            try:
+                font = ImageFont.truetype("DejaVuSans.ttf", font_size)
+            except Exception:
+                font = ImageFont.load_default()
+        text = str(page_number)
+        bbox = draw.textbbox((0, 0), text, font=font)
+        text_width = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
+        padding = 8
+        box_width = text_width + padding * 2
+        box_height = text_height + padding * 2
+        x = A4_WIDTH - marginRight - box_width
+        y = max(10, marginTop // 2 - box_height // 2)
+        box_coords = [(x, y), (x + box_width, y + box_height)]
+        draw.rectangle(box_coords, fill='white', outline='black')
+        text_x = x + (box_width - text_width) // 2
+        text_y = y + (box_height - text_height) // 2
+        draw.text((text_x, text_y), text, fill='black', font=font)
+
     current_page = Image.new('RGB', (A4_WIDTH, A4_HEIGHT), 'white')
-    # current_y = OUTER_MARGIN
     current_y = marginTop
+    page_number = 1
     
     for img in processed_images:
         # 이미지가 페이지를 넘어서는지 확인
         if current_y + img.height > A4_HEIGHT - marginBottom:
+            add_page_number(current_page, page_number)
             pdf_pages.append(current_page) # 현재 페이지 완성
             current_page = Image.new('RGB', (A4_WIDTH, A4_HEIGHT), 'white') # 새 페이지
             current_y = marginTop
+            page_number += 1
             
         # 페이지에 이미지 붙이기
         current_page.paste(img, (marginLeft, current_y))
         current_y += img.height + innerMargin
         
+    add_page_number(current_page, page_number)
     pdf_pages.append(current_page) # 마지막 페이지 추가
 
     # PDF 저장

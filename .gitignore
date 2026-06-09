@@ -15,3 +15,5 @@ __pycache__/
 # Ignore frontend lockfiles and build outputs
 /frontend/yarn-error.log*
 /frontend/pnpm-debug.log*
+
+*.pdf

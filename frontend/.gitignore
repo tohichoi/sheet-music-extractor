@@ -55,4 +55,4 @@ coverage
 
 # Generated data
 public/data/
-
+*.pdf
