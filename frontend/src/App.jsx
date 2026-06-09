@@ -19,11 +19,8 @@ function App() {
 
   // 🌙 Tailwind 기반 테마 변경 감지 및 적용 (html 태그에 dark 클래스 토글)
   useEffect(() => {
-    if (isDarkMode) {
-      document.documentElement.classList.add('dark');
-    } else {
-      document.documentElement.classList.remove('dark');
-    }
+    document.documentElement.classList.toggle('dark', isDarkMode);
+    document.body.classList.toggle('dark', isDarkMode);
   }, [isDarkMode]);
 
   // 백엔드 폴링 로직

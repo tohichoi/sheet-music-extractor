@@ -1,55 +1,229 @@
-# backend/app/api/endpoints.py
-import os
-import shutil
 import hashlib
-from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, BackgroundTasks
-from fastapi.responses import FileResponse # ✅ FileResponse 추가
-from fastapi import Query
+import shutil
+from pathlib import Path
+from typing import List
+
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
+from PIL import Image, ImageDraw, ImageFont
+import cv2
+import numpy as np
+
 from app.core.database import get_db
 from app.models.video import Video
 from app.schemas.video import VideoResponse
 from app.services.extractor import process_video_background
-from PIL import Image, ImageDraw, ImageFont # ✅ Pillow 이미지 모듈 추가
-import cv2  # ✅ OpenCV 임포트 추가
-import numpy as np # ✅ NumPy 임포트 추가
-
 
 router = APIRouter()
-VIDEO_DIR = "./storage/videos"
-os.makedirs(VIDEO_DIR, exist_ok=True)
+VIDEO_DIR = Path('storage/videos')
+PDF_DIR = Path('storage/pdfs')
+A4_WIDTH = 1240
+A4_HEIGHT = 1754
+DEFAULT_FONT_SIZE = 24
+
+VIDEO_DIR.mkdir(parents=True, exist_ok=True)
+PDF_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def trim_white_margin(image: Image.Image, tol=240):
-    """
-    이미지의 가장자리에서 흰색 여백을 제거합니다.
-    tol: 흰색으로 간주할 밝기 값 (0-255, 클수록 더 많은 영역을 흰색으로 간주)
-    """
-    # Pillow 이미지를 OpenCV 형식(numpy)으로 변환
-    img_cv = np.array(image.convert('L')) # 흑백 변환
-    
-    # 마스크 생성: 픽셀 값이 tol보다 작으면(어두우면) True
-    mask = img_cv < tol
-    
-    # 내용물이 있는 영역의 좌표 찾기
+def trim_white_margin(image: Image.Image, tol: int = 240) -> Image.Image:
+    """Trim white border from the edges of a Pillow image."""
+    grayscale = np.array(image.convert('L'))
+    mask = grayscale < tol
     coords = np.argwhere(mask)
+
     if coords.size == 0:
-        return image # 내용이 없으면 원본 반환
-        
+        return image
+
     y0, x0 = coords.min(axis=0)
     y1, x1 = coords.max(axis=0) + 1
-    
-    # 여백 잘라내기
-    trimmed_img = image.crop((x0, y0, x1, y1))
-    return trimmed_img
+    return image.crop((x0, y0, x1, y1))
 
 
-@router.post("/upload", response_model=VideoResponse)
+def get_page_number_font(font_size: int = DEFAULT_FONT_SIZE):
+    for font_name in ('arial.ttf', 'DejaVuSans.ttf'):
+        try:
+            return ImageFont.truetype(font_name, font_size)
+        except Exception:
+            continue
+    return ImageFont.load_default()
+
+
+def add_page_number(
+    page: Image.Image,
+    page_number: int,
+    page_width: int,
+    margin_right: int,
+    margin_top: int,
+) -> None:
+    """Draw the page number inside a small boxed label aligned to the top-right."""
+    draw = ImageDraw.Draw(page)
+    font = get_page_number_font()
+    text = str(page_number)
+
+    bbox = draw.textbbox((0, 0), text, font=font)
+    text_width = bbox[2] - bbox[0]
+    text_height = bbox[3] - bbox[1]
+    padding = 8
+    box_width = text_width + padding * 2
+    box_height = text_height + padding * 2
+
+    x = page_width - margin_right - box_width
+    y = max(10, margin_top // 2 - box_height // 2)
+
+    draw.rectangle([(x, y), (x + box_width, y + box_height)], fill='white', outline='black')
+    draw.text(
+        (x + (box_width - text_width) // 2, y + (box_height - text_height) // 2),
+        text,
+        fill='black',
+        font=font,
+    )
+
+
+def create_canvas(width: int, height: int, color: str = 'white') -> Image.Image:
+    return Image.new('RGB', (width, height), color)
+
+
+def get_pdf_path(
+    video_id: int,
+    margin_top: int,
+    margin_bottom: int,
+    margin_left: int,
+    margin_right: int,
+    inner_margin: int,
+) -> Path:
+    filename = (
+        f'sheet_music_video_{video_id}'
+        f'_mt{margin_top}'
+        f'_mb{margin_bottom}'
+        f'_ml{margin_left}'
+        f'_mr{margin_right}'
+        f'_im{inner_margin}.pdf'
+    )
+    return PDF_DIR / filename
+
+
+def process_keyframes_to_images(keyframes, content_width: int) -> List[Image.Image]:
+    processed_images: List[Image.Image] = []
+    for keyframe in keyframes:
+        image_path = Path(keyframe.image_filepath)
+        if not image_path.exists():
+            continue
+
+        with Image.open(image_path) as opened_image:
+            image = opened_image.convert('RGB')
+            trimmed = trim_white_margin(image)
+            ratio = content_width / trimmed.width
+            resized = trimmed.resize((content_width, int(trimmed.height * ratio)))
+            processed_images.append(resized)
+
+    return processed_images
+
+
+def build_pdf_pages(
+    images: List[Image.Image],
+    page_width: int,
+    page_height: int,
+    margin_top: int,
+    margin_bottom: int,
+    margin_left: int,
+    margin_right: int,
+    inner_margin: int,
+) -> List[Image.Image]:
+    pages: List[Image.Image] = []
+    current_page = create_canvas(page_width, page_height)
+    current_y = margin_top
+    page_number = 1
+
+    for image in images:
+        if current_y + image.height > page_height - margin_bottom:
+            add_page_number(current_page, page_number, page_width, margin_right, margin_top)
+            pages.append(current_page)
+            current_page = create_canvas(page_width, page_height)
+            current_y = margin_top
+            page_number += 1
+
+        current_page.paste(image, (margin_left, current_y))
+        current_y += image.height + inner_margin
+
+    add_page_number(current_page, page_number, page_width, margin_right, margin_top)
+    pages.append(current_page)
+    return pages
+
+
+def save_pdf(pages: List[Image.Image], pdf_path: Path) -> None:
+    if not pages:
+        return
+
+    pages[0].save(
+        pdf_path,
+        save_all=True,
+        append_images=pages[1:],
+        resolution=300.0,
+        dpi=(300, 300),
+    )
+
+
+def get_db_video(video_id: int, db: Session) -> Video:
+    video = db.query(Video).filter(Video.id == video_id).first()
+    if not video:
+        raise HTTPException(status_code=404, detail='Video not found')
+    return video
+
+
+def save_uploaded_video(upload_file: UploadFile, file_hash: str) -> Path:
+    destination = VIDEO_DIR / f'{file_hash}_{upload_file.filename}'
+    with destination.open('wb+') as buffer:
+        shutil.copyfileobj(upload_file.file, buffer)
+    return destination
+
+
+def read_video_metadata(file_path: Path) -> tuple[int, int, float, float]:
+    capture = cv2.VideoCapture(str(file_path))
+    width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps = capture.get(cv2.CAP_PROP_FPS)
+    frame_count = capture.get(cv2.CAP_PROP_FRAME_COUNT)
+    capture.release()
+
+    duration = frame_count / fps if fps > 0 else 0.0
+    return width, height, fps, duration
+
+
+def create_video_record(
+    db: Session,
+    original_filename: str,
+    stored_filepath: str,
+    file_hash: str,
+    file_size: int,
+    width: int,
+    height: int,
+    duration: float,
+    fps: float,
+) -> Video:
+    video = Video(
+        original_filename=original_filename,
+        stored_filepath=stored_filepath,
+        file_hash=file_hash,
+        file_size=file_size,
+        width=width,
+        height=height,
+        duration=duration,
+        fps=fps,
+        status='uploaded',
+    )
+    db.add(video)
+    db.commit()
+    db.refresh(video)
+    return video
+
+
+@router.post('/upload', response_model=VideoResponse)
 async def upload_video(
-    background_tasks: BackgroundTasks, 
-    file: UploadFile = File(...), 
-    db: Session = Depends(get_db)
-):
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+) -> Video:
     md5_hash = hashlib.md5()
     while chunk := await file.read(8192):
         md5_hash.update(chunk)
@@ -60,147 +234,67 @@ async def upload_video(
     if existing_video:
         return existing_video
 
-    safe_filename = f"{file_hash}_{file.filename}"
-    file_location = f"{VIDEO_DIR}/{safe_filename}"
-    
-    with open(file_location, "wb+") as file_object:
-        shutil.copyfileobj(file.file, file_object)
-
-    # ✅ 파일 크기 추출 (Bytes)
-    file_size = os.path.getsize(file_location)
-
-    # ✅ OpenCV를 이용해 비디오 메타데이터 추출
-    cap = cv2.VideoCapture(file_location)
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
-    duration = frame_count / fps if fps > 0 else 0.0
-    cap.release()
-
-    # 데이터베이스에 새 메타데이터 함께 저장
-    new_video = Video(
+    saved_path = save_uploaded_video(file, file_hash)
+    file_size = saved_path.stat().st_size
+    width, height, fps, duration = read_video_metadata(saved_path)
+    new_video = create_video_record(
+        db=db,
         original_filename=file.filename,
-        stored_filepath=file_location,
+        stored_filepath=str(saved_path),
         file_hash=file_hash,
-        file_size=file_size, # ✅ 메타데이터 추가
+        file_size=file_size,
         width=width,
         height=height,
         duration=duration,
         fps=fps,
-        status="uploaded"
     )
-    db.add(new_video)
-    db.commit()
-    db.refresh(new_video)
 
     background_tasks.add_task(process_video_background, new_video.id)
-
     return new_video
 
-@router.get("/{video_id}", response_model=VideoResponse)
-def get_video_status(video_id: int, db: Session = Depends(get_db)):
-    video = db.query(Video).filter(Video.id == video_id).first()
-    if not video:
-        raise HTTPException(status_code=404, detail="Video not found")
-    return video
 
-@router.get("/{video_id}/pdf")
+@router.get('/{video_id}', response_model=VideoResponse)
+def get_video_status(video_id: int, db: Session = Depends(get_db)) -> Video:
+    return get_db_video(video_id, db)
+
+
+@router.get('/{video_id}/pdf')
 def export_keyframes_to_pdf(
-    video_id: int, 
+    video_id: int,
     db: Session = Depends(get_db),
-    marginTop: int = Query(50),
-    marginBottom: int = Query(50),
+    marginTop: int = Query(100),
+    marginBottom: int = Query(20),
     marginLeft: int = Query(20),
     marginRight: int = Query(20),
-    innerMargin: int = Query(20)
-):
-    """추출된 키프레임 이미지들을 모아 하나의 PDF로 병합하여 반환합니다."""
-    video = db.query(Video).filter(Video.id == video_id).first()
-    if not video:
-        raise HTTPException(status_code=404, detail="Video not found")
-
+    innerMargin: int = Query(20),
+) -> FileResponse:
+    video = get_db_video(video_id, db)
     if not video.keyframes:
-        raise HTTPException(status_code=404, detail="No keyframes found for this video")
+        raise HTTPException(status_code=404, detail='No keyframes found for this video')
 
-    # PDF 저장용 전용 디렉토리 생성
-    PDF_DIR = "./storage/pdfs"
-    os.makedirs(PDF_DIR, exist_ok=True)
+    pdf_path = get_pdf_path(
+        video_id,
+        margin_top=marginTop,
+        margin_bottom=marginBottom,
+        margin_left=marginLeft,
+        margin_right=marginRight,
+        inner_margin=innerMargin,
+    )
+    if pdf_path.exists():
+        return FileResponse(path=str(pdf_path), filename=pdf_path.name, media_type='application/pdf')
 
-    pdf_filename = f"sheet_music_video_{video_id}.pdf"
-    pdf_path = os.path.join(PDF_DIR, pdf_filename)
+    content_width = A4_WIDTH - (marginLeft + marginRight)
+    processed_images = process_keyframes_to_images(video.keyframes, content_width)
+    pdf_pages = build_pdf_pages(
+        processed_images,
+        page_width=A4_WIDTH,
+        page_height=A4_HEIGHT,
+        margin_top=marginTop,
+        margin_bottom=marginBottom,
+        margin_left=marginLeft,
+        margin_right=marginRight,
+        inner_margin=innerMargin,
+    )
 
-    # 🌟 최적화: 이미 PDF가 생성되어 있다면 연산을 생략하고 기존 파일 반환
-    if os.path.exists(pdf_path):
-        return FileResponse(path=pdf_path, filename=pdf_filename, media_type='application/pdf')
-
-    A4_WIDTH = 1240
-    A4_HEIGHT = 1754
-    
-    # CONTENT_WIDTH = A4_WIDTH - (2 * OUTER_MARGIN)
-    CONTENT_WIDTH = A4_WIDTH - (marginLeft + marginRight)
-    
-    pdf_pages = []
-    
-    # 1. 모든 이미지를 열고, A4 가로 너비에 맞춰 높이를 조정
-    processed_images = []
-    for kf in video.keyframes:
-        if os.path.exists(kf.image_filepath):
-            img = Image.open(kf.image_filepath).convert('RGB')
-            img = trim_white_margin(img)
-            # 가로 너비를 A4 가로 너비로 맞춤
-            ratio = CONTENT_WIDTH / img.width
-            new_height = int(img.height * ratio)
-            processed_images.append(img.resize((CONTENT_WIDTH, new_height)))
-
-    # 2. 이미지를 페이지에 채우기
-    def add_page_number(page: Image.Image, page_number: int):
-        draw = ImageDraw.Draw(page)
-        font_size = 24
-        try:
-            font = ImageFont.truetype("arial.ttf", font_size)
-        except Exception:
-            try:
-                font = ImageFont.truetype("DejaVuSans.ttf", font_size)
-            except Exception:
-                font = ImageFont.load_default()
-        text = str(page_number)
-        bbox = draw.textbbox((0, 0), text, font=font)
-        text_width = bbox[2] - bbox[0]
-        text_height = bbox[3] - bbox[1]
-        padding = 8
-        box_width = text_width + padding * 2
-        box_height = text_height + padding * 2
-        x = A4_WIDTH - marginRight - box_width
-        y = max(10, marginTop // 2 - box_height // 2)
-        box_coords = [(x, y), (x + box_width, y + box_height)]
-        draw.rectangle(box_coords, fill='white', outline='black')
-        text_x = x + (box_width - text_width) // 2
-        text_y = y + (box_height - text_height) // 2
-        draw.text((text_x, text_y), text, fill='black', font=font)
-
-    current_page = Image.new('RGB', (A4_WIDTH, A4_HEIGHT), 'white')
-    current_y = marginTop
-    page_number = 1
-    
-    for img in processed_images:
-        # 이미지가 페이지를 넘어서는지 확인
-        if current_y + img.height > A4_HEIGHT - marginBottom:
-            add_page_number(current_page, page_number)
-            pdf_pages.append(current_page) # 현재 페이지 완성
-            current_page = Image.new('RGB', (A4_WIDTH, A4_HEIGHT), 'white') # 새 페이지
-            current_y = marginTop
-            page_number += 1
-            
-        # 페이지에 이미지 붙이기
-        current_page.paste(img, (marginLeft, current_y))
-        current_y += img.height + innerMargin
-        
-    add_page_number(current_page, page_number)
-    pdf_pages.append(current_page) # 마지막 페이지 추가
-
-    # PDF 저장
-    if pdf_pages:
-        pdf_pages[0].save(pdf_path, save_all=True, append_images=pdf_pages[1:], resolution=300.0, dpi=(300, 300))
-
-    return FileResponse(path=pdf_path, filename=pdf_filename, media_type='application/pdf')
+    save_pdf(pdf_pages, pdf_path)
+    return FileResponse(path=str(pdf_path), filename=pdf_path.name, media_type='application/pdf')
