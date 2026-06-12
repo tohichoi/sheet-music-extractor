@@ -26,6 +26,17 @@ VIDEO_DIR.mkdir(parents=True, exist_ok=True)
 PDF_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def parse_comma_separated_ints(keyFrames: str = Query(default="", description="콤마로 구분된 숫자들 (예: 1,2,3,4)")) -> list[int]:
+    if not keyFrames:
+        return []
+    try:
+        # 콤마로 나누고 양쪽 공백을 제거한 뒤 정수로 변환
+        return [int(item.strip()) for item in keyFrames.split(",")]
+    except ValueError:
+        # 숫자가 아닌 값이 섞여 있을 경우 에러 처리
+        raise HTTPException(status_code=422, detail="keyFrames must be a comma-separated list of integers.")
+
+
 def trim_white_margin(image: Image.Image, tol: int = 240) -> Image.Image:
     """Trim white border from the edges of a Pillow image."""
     grayscale = np.array(image.convert('L'))
@@ -103,9 +114,16 @@ def get_pdf_path(
     return PDF_DIR / filename
 
 
-def process_keyframes_to_images(keyframes, content_width: int) -> List[Image.Image]:
+def process_keyframes_to_images(keyframes, keyframe_ids: List[int], content_width: int) -> List[Image.Image]:
     processed_images: List[Image.Image] = []
-    for keyframe in keyframes:
+
+    if len(keyframe_ids) == 0:
+        keyframe_ids = range(len(keyframes))
+
+    for index, keyframe in enumerate(keyframes):
+        if index not in keyframe_ids:
+            continue
+
         image_path = Path(keyframe.image_filepath)
         if not image_path.exists():
             continue
@@ -288,6 +306,7 @@ def export_keyframes_to_pdf(
     marginLeft: int = Query(20),
     marginRight: int = Query(20),
     innerMargin: int = Query(20),
+    keyFrames: List[int] = Depends(parse_comma_separated_ints),
 ) -> FileResponse:
     video = get_db_video(video_id, db)
     if not video.keyframes:
@@ -305,7 +324,7 @@ def export_keyframes_to_pdf(
         return FileResponse(path=str(pdf_path), filename=pdf_path.name, media_type='application/pdf')
 
     content_width = A4_WIDTH - (marginLeft + marginRight)
-    processed_images = process_keyframes_to_images(video.keyframes, content_width)
+    processed_images = process_keyframes_to_images(video.keyframes, keyFrames, content_width)
     pdf_pages = build_pdf_pages(
         processed_images,
         page_width=A4_WIDTH,

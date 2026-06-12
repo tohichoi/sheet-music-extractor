@@ -45,6 +45,9 @@ function App() {
   const [cropRect, setCropRect] = useState(null); // { x, y, width, height } 비율 (0~1)
   const videoRef = useRef(null);
 
+  // 체크박스 상태: keyframes 인덱스(0-based)를 저장하는 Set
+  const [checkedFrames, setCheckedFrames] = useState(() => new Set());
+
   const API_BASE_URL = 'http://localhost:8000/api/videos';
   const STATIC_BASE_URL = 'http://localhost:8000';
 
@@ -127,6 +130,16 @@ function App() {
     localStorage.setItem('marginRight', marginRight);
     localStorage.setItem('innerMargin', innerMargin);
   }, [marginTop, marginBottom, marginLeft, marginRight, innerMargin]);
+  
+  // 비디오 정보가 로드될 때 keyframes가 있으면 기본으로 모두 체크되게 초기화
+  useEffect(() => {
+    if (videoInfo && Array.isArray(videoInfo.keyframes)) {
+      const all = new Set(videoInfo.keyframes.map((_, i) => i));
+      setCheckedFrames(all);
+    } else {
+      setCheckedFrames(new Set());
+    }
+  }, [videoInfo?.keyframes?.length]);
   
   const uploadVideo = async (fileToUpload) => {
     setStatus('🚀 Uploading...');
@@ -253,7 +266,14 @@ function App() {
     if (!videoInfo || !videoInfo.id) return;
     try {
       setStatus('📄 Generating PDF...');
-      const queryParams = new URLSearchParams({ marginTop, marginBottom, marginLeft, marginRight, innerMargin }).toString();
+      const params = new URLSearchParams({ marginTop, marginBottom, marginLeft, marginRight, innerMargin });
+
+      // 선택된(체크된) 프레임 인덱스를 1-based로 변환하여 keyFrames 쿼리 파라미터로 전달
+      // const selected = Array.from(checkedFrames).sort((a, b) => a - b).map(i => i + 1);
+      const selected = Array.from(checkedFrames).sort((a, b) => a - b).map(i => i);
+      if (selected.length > 0) params.append('keyFrames', selected.join(','));
+
+      const queryParams = params.toString();
       const response = await fetch(`${API_BASE_URL}/${videoInfo.id}/pdf?${queryParams}`);
       if (!response.ok) throw new Error('PDF generation failed');
 
@@ -279,6 +299,16 @@ function App() {
     localStorage.removeItem('lastVideoId');
     setVideoInfo(null);
     setStatus('Idle');
+  };
+
+  // 토글 체크박스 핸들러
+  const toggleFrameChecked = (index) => {
+    setCheckedFrames(prev => {
+      const next = new Set(prev);
+      if (next.has(index)) next.delete(index);
+      else next.add(index);
+      return next;
+    });
   };
 
   const formatDuration = (sec) => sec ? `${Math.floor(sec / 60)}m ${Math.floor(sec % 60).toString().padStart(2, '0')}s` : '-';
@@ -475,8 +505,23 @@ function App() {
                   className="group bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl overflow-hidden cursor-pointer hover:-translate-y-1 hover:shadow-lg hover:border-blue-500 dark:hover:border-blue-400 transition-all duration-300"
                   onClick={() => setSelectedImage(imageUrl)}
                 >
-                  <div className="aspect-video overflow-hidden bg-slate-100 dark:bg-slate-900">
-                    <img src={imageUrl} alt={`Frame ${index + 1}`} loading="lazy" className="w-full h-full object-contain group-hover:scale-105 transition-transform duration-500" />
+                  <div className="relative">
+                    {/* 체크박스 오버레이 */}
+                    <div className="absolute top-2 left-2 z-10">
+                      <label className="flex items-center gap-2 bg-white/70 dark:bg-slate-900/70 p-1 rounded">
+                        <input
+                          type="checkbox"
+                          checked={checkedFrames.has(index)}
+                          onChange={() => toggleFrameChecked(index)}
+                          onClick={(e) => e.stopPropagation()}
+                          className="w-4 h-4"
+                        />
+                      </label>
+                    </div>
+
+                    <div className="aspect-video overflow-hidden bg-slate-100 dark:bg-slate-900">
+                      <img src={imageUrl} alt={`Frame ${index + 1}`} loading="lazy" className="w-full h-full object-contain group-hover:scale-105 transition-transform duration-500" />
+                    </div>
                   </div>
                   <div className="p-3 text-center bg-slate-50 dark:bg-slate-800/80 border-t border-slate-200 dark:border-slate-700">
                     <span className="text-xs text-slate-500 dark:text-slate-400 font-medium">#{index + 1}</span>

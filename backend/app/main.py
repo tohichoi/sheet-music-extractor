@@ -1,9 +1,19 @@
 # backend/app/main.py 최상단 import 영역
+from pathlib import Path
+
 from fastapi.staticfiles import StaticFiles
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.database import engine, Base
 from app.api import endpoints
+
+def init_storages_directories():
+    storage = Path(__file__).parent.parent / 'storage'
+    for d in ['database', 'videos', 'pdfs']:
+        (storage / d).mkdir(parents=True, exist_ok=True)
+
+
+init_storages_directories()
 
 Base.metadata.create_all(bind=engine)
 
@@ -21,6 +31,7 @@ app.add_middleware(
 app.include_router(endpoints.router, prefix="/api/videos", tags=["videos"])
 
 app.mount("/storage", StaticFiles(directory="./storage"), name="storage")
+
 
 @app.get('/')
 def read_root():
