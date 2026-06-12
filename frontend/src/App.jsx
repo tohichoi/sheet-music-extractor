@@ -1,5 +1,4 @@
-import { useState, useEffect } from 'react';
-
+import { useState, useEffect, useRef } from 'react';
 
 // 🌟 새로 추가: 로컬 스토리지에서 숫자 값을 안전하게 불러오는 헬퍼 함수
 const getSavedNumber = (key, defaultValue) => {
@@ -35,6 +34,16 @@ function App() {
   const [marginLeft, setMarginLeft] = useState(() => getSavedNumber('marginLeft', 50));
   const [marginRight, setMarginRight] = useState(() => getSavedNumber('marginRight', 50));
   const [innerMargin, setInnerMargin] = useState(() => getSavedNumber('innerMargin', 10));
+
+  // 🌟 ROI 선택을 위한 상태 추가
+  const [videoFile, setVideoFile] = useState(null);
+  const [videoPreviewUrl, setVideoPreviewUrl] = useState(null);
+  
+  // 드래그 상태 관리
+  const [isDrawing, setIsDrawing] = useState(false);
+  const [startPos, setStartPos] = useState({ x: 0, y: 0 });
+  const [cropRect, setCropRect] = useState(null); // { x, y, width, height } 비율 (0~1)
+  const videoRef = useRef(null);
 
   const API_BASE_URL = 'http://localhost:8000/api/videos';
   const STATIC_BASE_URL = 'http://localhost:8000';
@@ -121,8 +130,20 @@ function App() {
   
   const uploadVideo = async (fileToUpload) => {
     setStatus('🚀 업로드 중...');
-    const formData = new FormData();
+    let formData = new FormData();
     formData.append('file', fileToUpload);
+    // 크롭 영역이 지정되었다면 해당 비율을 폼 데이터로 전송, 없으면 전체(0,0,1,1) 전송
+    if (cropRect && cropRect.width > 0.05 && cropRect.height > 0.05) {
+      formData.append('crop_x', cropRect.x.toFixed(4));
+      formData.append('crop_y', cropRect.y.toFixed(4));
+      formData.append('crop_w', cropRect.width.toFixed(4));
+      formData.append('crop_h', cropRect.height.toFixed(4));
+    } else {
+      formData.append('crop_x', 0.0);
+      formData.append('crop_y', 0.0);
+      formData.append('crop_w', 1.0);
+      formData.append('crop_h', 1.0);
+    }
 
     try {
       const response = await fetch(`${API_BASE_URL}/upload`, {
@@ -149,10 +170,71 @@ function App() {
     }
   };
 
+  // 파일 선택 처리
   const handleManualUpload = (e) => {
     const file = e.target.files[0];
-    if (file) uploadVideo(file);
+    if (file) {
+      setVideoFile(file);
+      setVideoPreviewUrl(URL.createObjectURL(file));
+      setCropRect(null); // 새로운 영상 업로드 시 크롭 초기화
+    }
   };
+
+  // 🌟 마우스 드래그 이벤트 핸들러
+  const handleMouseDown = (e) => {
+    const rect = videoRef.current.getBoundingClientRect();
+    const x = (e.clientX - rect.left) / rect.width;
+    const y = (e.clientY - rect.top) / rect.height;
+    setIsDrawing(true);
+    setStartPos({ x, y });
+    setCropRect({ x, y, width: 0, height: 0 });
+  };
+
+  const handleMouseMove = (e) => {
+    if (!isDrawing) return;
+    const rect = videoRef.current.getBoundingClientRect();
+    const currentX = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const currentY = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
+
+    setCropRect({
+      x: Math.min(startPos.x, currentX),
+      y: Math.min(startPos.y, currentY),
+      width: Math.abs(currentX - startPos.x),
+      height: Math.abs(currentY - startPos.y),
+    });
+  };
+
+  const handleMouseUp = () => {
+    setIsDrawing(false);
+  };
+
+
+  // 🌟 실제 서버로 전송하는 함수
+  const executeUpload = async () => {
+    if (!videoFile)
+      return;
+    
+    // setStatus('🚀 업로드 중...');
+    
+    // const formData = new FormData();
+    // formData.append('file', videoFile);
+    
+    // // 크롭 영역이 지정되었다면 해당 비율을 폼 데이터로 전송, 없으면 전체(0,0,1,1) 전송
+    // if (cropRect && cropRect.width > 0.05 && cropRect.height > 0.05) {
+    //   formData.append('crop_x', cropRect.x.toFixed(4));
+    //   formData.append('crop_y', cropRect.y.toFixed(4));
+    //   formData.append('crop_w', cropRect.width.toFixed(4));
+    //   formData.append('crop_h', cropRect.height.toFixed(4));
+    // } else {
+    //   formData.append('crop_x', 0.0);
+    //   formData.append('crop_y', 0.0);
+    //   formData.append('crop_w', 1.0);
+    //   formData.append('crop_h', 1.0);
+    // }
+
+    uploadVideo(videoFile); // 업로드 로직을 별도의 함수로 분리하여 재사용 가능하게 함
+  };
+
 
   const handleAutoTestUpload = async () => {
     setStatus('테스트 파일 로딩 중...');
@@ -247,6 +329,49 @@ function App() {
             🚀 테스트 자동 실행
           </button>
         </div>
+      </div>
+
+      {/* 🌟 파일 업로드 및 ROI 선택 UI 영역 */}
+      <div className={cardClass}>
+        <h3 className="text-lg font-bold mb-4">📁 1. 동영상 선택 및 영역 지정</h3>
+        <input type="file" accept="video/*" onChange={handleManualUpload} className="mb-4 block w-full text-sm..." />
+        
+        {videoPreviewUrl && (
+          <div className="mt-4">
+            <p className="text-sm text-slate-500 mb-2">💡 영상 위를 마우스로 드래그하여 악보가 나오는 영역만 지정하세요. 지정하지 않으면 전체 화면을 감지합니다.</p>
+            
+            {/* 드래그 영역 컨테이너 */}
+            <div 
+              className="relative inline-block border-2 border-slate-300 rounded overflow-hidden cursor-crosshair select-none"
+              onMouseDown={handleMouseDown}
+              onMouseMove={handleMouseMove}
+              onMouseUp={handleMouseUp}
+              onMouseLeave={handleMouseUp}
+            >
+              <video ref={videoRef} src={videoPreviewUrl} className="max-h-[500px] w-auto pointer-events-none" controls={false} muted />
+              
+              {/* 그려진 캡처 영역 표시 */}
+              {cropRect && (
+                <div 
+                  className="absolute border-2 border-blue-500 bg-blue-500/20"
+                  style={{
+                    left: `${cropRect.x * 100}%`,
+                    top: `${cropRect.y * 100}%`,
+                    width: `${cropRect.width * 100}%`,
+                    height: `${cropRect.height * 100}%`
+                  }}
+                />
+              )}
+            </div>
+
+            <button 
+              onClick={executeUpload}
+              className={`${btnClass} bg-blue-600 text-white mt-4 block w-full md:w-auto`}
+            >
+              🚀 위 설정으로 악보 추출 시작
+            </button>
+          </div>
+        )}
       </div>
 
       {/* 파일 업로드 및 상태 표시 */}

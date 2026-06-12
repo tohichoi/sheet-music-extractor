@@ -3,7 +3,7 @@ import shutil
 from pathlib import Path
 from typing import List
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from PIL import Image, ImageDraw, ImageFont
@@ -222,6 +222,11 @@ def create_video_record(
 async def upload_video(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
+    crop_x: float = Form(0.0), # 선택 영역 X 시작점 비율 (기본값 0.0 = 전체)
+    crop_y: float = Form(0.0), # 선택 영역 Y 시작점 비율
+    crop_w: float = Form(1.0), # 선택 영역 너비 비율 (기본값 1.0 = 전체)
+    crop_h: float = Form(1.0), # 선택 영역 높이 비율
+    
     db: Session = Depends(get_db),
 ) -> Video:
     md5_hash = hashlib.md5()
@@ -249,7 +254,13 @@ async def upload_video(
         fps=fps,
     )
 
-    background_tasks.add_task(process_video_background, new_video.id)
+    # Schedule a single background task and pass the crop rectangle explicitly
+    background_tasks.add_task(
+        process_video_background,
+        video_id=new_video.id,
+        crop_rect=(crop_x, crop_y, crop_w, crop_h),
+    )
+    
     return new_video
 
 
