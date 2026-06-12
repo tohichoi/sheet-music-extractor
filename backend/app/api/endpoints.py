@@ -173,8 +173,9 @@ def get_db_video(video_id: int, db: Session) -> Video:
 
 def save_uploaded_video(upload_file: UploadFile, file_hash: str) -> Path:
     destination = VIDEO_DIR / f'{file_hash}_{upload_file.filename}'
-    with destination.open('wb+') as buffer:
-        shutil.copyfileobj(upload_file.file, buffer)
+    if not destination.exists():
+        with destination.open('wb+') as buffer:
+            shutil.copyfileobj(upload_file.file, buffer)
     return destination
 
 
@@ -220,33 +221,41 @@ def create_video_record(
 
 @router.post('/upload', response_model=VideoResponse)
 async def upload_video(
-    background_tasks: BackgroundTasks,
-    file: UploadFile = File(...),
-    crop_x: float = Form(0.0), # 선택 영역 X 시작점 비율 (기본값 0.0 = 전체)
-    crop_y: float = Form(0.0), # 선택 영역 Y 시작점 비율
-    crop_w: float = Form(1.0), # 선택 영역 너비 비율 (기본값 1.0 = 전체)
-    crop_h: float = Form(1.0), # 선택 영역 높이 비율
-    
-    db: Session = Depends(get_db),
+        background_tasks: BackgroundTasks,
+        file: UploadFile = File(...),
+        crop_x: float = Form(0.0),
+        crop_y: float = Form(0.0),
+        crop_w: float = Form(1.0),
+        crop_h: float = Form(1.0),
+        db: Session = Depends(get_db),
 ) -> Video:
+    # 1. 파일 원본의 고유 해시(Base Hash) 추출
     md5_hash = hashlib.md5()
     while chunk := await file.read(8192):
         md5_hash.update(chunk)
-    file_hash = md5_hash.hexdigest()
-    await file.seek(0)
+    base_file_hash = md5_hash.hexdigest()
+    await file.seek(0) # 커서 초기화
 
-    existing_video = db.query(Video).filter(Video.file_hash == file_hash).first()
+    # 🌟 2. 원본 해시와 ROI를 결합한 새로운 '작업 해시(Task Hash)' 생성
+    task_data_string = f"{base_file_hash}_{crop_x:.4f}_{crop_y:.4f}_{crop_w:.4f}_{crop_h:.4f}"
+    task_hash = hashlib.md5(task_data_string.encode()).hexdigest()
+
+    # 이미 정확히 동일한 영상 + 동일한 ROI로 작업된 결과가 있는지 확인
+    existing_video = db.query(Video).filter(Video.file_hash == task_hash).first()
     if existing_video:
         return existing_video
 
-    saved_path = save_uploaded_video(file, file_hash)
+    # 🌟 3. 원본 비디오 파일은 base_file_hash 기준으로 단 1번만 저장 (중복 저장 방지)
+    saved_path = save_uploaded_video(file, base_file_hash)
     file_size = saved_path.stat().st_size
     width, height, fps, duration = read_video_metadata(saved_path)
+
+    # DB에는 task_hash로 기록하여 독립된 결과물로 취급
     new_video = create_video_record(
         db=db,
         original_filename=file.filename,
         stored_filepath=str(saved_path),
-        file_hash=file_hash,
+        file_hash=task_hash,
         file_size=file_size,
         width=width,
         height=height,
@@ -254,13 +263,14 @@ async def upload_video(
         fps=fps,
     )
 
-    # Schedule a single background task and pass the crop rectangle explicitly
+    # 🌟 4. 백그라운드 워커에 base_file_hash도 함께 전달하여 캐시 폴더를 찾게 함
     background_tasks.add_task(
         process_video_background,
         video_id=new_video.id,
         crop_rect=(crop_x, crop_y, crop_w, crop_h),
+        base_file_hash=base_file_hash # 새롭게 추가
     )
-    
+
     return new_video
 
 
