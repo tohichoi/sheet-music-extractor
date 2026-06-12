@@ -320,8 +320,10 @@ def export_keyframes_to_pdf(
         margin_right=marginRight,
         inner_margin=innerMargin,
     )
+
+    download_filename = Path(video.original_filename).with_suffix('.pdf')
     if pdf_path.exists():
-        return FileResponse(path=str(pdf_path), filename=pdf_path.name, media_type='application/pdf')
+        return FileResponse(path=str(pdf_path), filename=download_filename.name, media_type='application/pdf')
 
     content_width = A4_WIDTH - (marginLeft + marginRight)
     processed_images = process_keyframes_to_images(video.keyframes, keyFrames, content_width)
@@ -337,4 +339,4 @@ def export_keyframes_to_pdf(
     )
 
     save_pdf(pdf_pages, pdf_path)
-    return FileResponse(path=str(pdf_path), filename=pdf_path.name, media_type='application/pdf')
+    return FileResponse(path=str(pdf_path), filename=download_filename.name, media_type='application/pdf')

@@ -51,6 +51,74 @@ function App() {
   const API_BASE_URL = 'http://localhost:8000/api/videos';
   const STATIC_BASE_URL = 'http://localhost:8000';
 
+  // 파일명 파싱 및 OS별 안전한 파일명 생성 헬퍼
+  const parseFilenameFromContentDisposition = (cd) => {
+    if (!cd) return null;
+    // RFC6266: filename* and filename
+    const filenameStar = /filename\*=(?:UTF-8'')?([^;\n]+)/i.exec(cd);
+    if (filenameStar) {
+      try {
+        return decodeURIComponent(filenameStar[1].trim().replace(/^"|"$/g, ''));
+      } catch (e) {
+        return filenameStar[1].trim().replace(/^"|"$/g, '');
+      }
+    }
+    const filenameMatch = /filename=(?:"([^"]+)"|([^;\n]+))/i.exec(cd);
+    if (filenameMatch) return (filenameMatch[1] || filenameMatch[2]).trim();
+    return null;
+  };
+
+  const detectIsWindows = () => {
+    try {
+      if (typeof navigator === 'undefined') return false;
+      const ua = navigator.userAgent || '';
+      const platform = navigator.platform || '';
+      return /Win/i.test(ua) || /Win/i.test(platform);
+    } catch (e) {
+      return false;
+    }
+  };
+
+  const sanitizeForWindows = (name) => {
+    // Windows에서 금지된 문자: <>:"/\\|?* 및 제어문자
+    let s = name.replace(/[<>:\\"\/\|\?\*\x00-\x1F]/g, '_');
+    // 파일명 끝의 공백 또는 마침표 제거
+    s = s.replace(/[\.\s]+$/g, '');
+    // 예약어(CON, PRN, AUX, NUL, COM1..9, LPT1..9)
+    const base = s.split('.')[0].toUpperCase();
+    const reserved = ['CON','PRN','AUX','NUL'];
+    for (let i=1;i<=9;i++){ reserved.push('COM'+i); reserved.push('LPT'+i); }
+    if (reserved.includes(base)) s = '_' + s;
+    return s || 'download';
+  };
+
+  const sanitizeForLinux = (name) => {
+    // '/'와 널 문자 제거, 제어문자 제거
+    let s = name.replace(/[\x00/\x00-\x1F]/g, '_');
+    // 기타 안전 처리
+    s = s.replace(/\s+$/g, '');
+    return s || 'download';
+  };
+
+  const ensurePdfExtension = (name) => {
+    if (!name) return 'sheet_music.pdf';
+    if (!/\.pdf$/i.test(name)) return name + '.pdf';
+    return name;
+  };
+
+  const getSafeFilename = (rawName) => {
+    let name = (rawName || '').toString();
+    // Limit length to 200 to avoid filesystem limits
+    if (name.length > 200) name = name.slice(0, 200);
+    if (detectIsWindows()) {
+      name = sanitizeForWindows(name);
+    } else {
+      name = sanitizeForLinux(name);
+    }
+    name = ensurePdfExtension(name);
+    return name;
+  };
+
   useEffect(() => {
     document.documentElement.classList.toggle('dark', isDarkMode);
     document.body.classList.toggle('dark', isDarkMode);
@@ -277,11 +345,18 @@ function App() {
       const response = await fetch(`${API_BASE_URL}/${videoInfo.id}/pdf?${queryParams}`);
       if (!response.ok) throw new Error('PDF generation failed');
 
+      // try to obtain filename from headers, fallback to server-provided original filename or id-based name
+      const cd = response.headers.get('content-disposition');
+      const parsed = parseFilenameFromContentDisposition(cd);
+      const fallback = videoInfo?.original_filename ? videoInfo.original_filename : `sheet_music_${videoInfo.id}.pdf`;
+      const rawName = parsed || fallback;
+      const safeName = getSafeFilename(rawName);
+
       const blob = await response.blob();
       const downloadUrl = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = downloadUrl;
-      link.download = `sheet_music_${videoInfo.id}.pdf`;
+      link.download = safeName;
       document.body.appendChild(link);
       link.click();
       link.remove();
