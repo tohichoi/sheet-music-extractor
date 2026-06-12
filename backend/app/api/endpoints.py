@@ -102,6 +102,7 @@ def get_pdf_path(
     margin_left: int,
     margin_right: int,
     inner_margin: int,
+    keyframe_ids: List[int],
 ) -> Path:
     filename = (
         f'sheet_music_video_{video_id}'
@@ -109,7 +110,9 @@ def get_pdf_path(
         f'_mb{margin_bottom}'
         f'_ml{margin_left}'
         f'_mr{margin_right}'
-        f'_im{inner_margin}.pdf'
+        f'_im{inner_margin}'
+        f'_{",".join(str(x) for x in keyframe_ids)}'
+        '.pdf'
     )
     return PDF_DIR / filename
 
@@ -319,6 +322,7 @@ def export_keyframes_to_pdf(
         margin_left=marginLeft,
         margin_right=marginRight,
         inner_margin=innerMargin,
+        keyframe_ids=keyFrames,
     )
 
     download_filename = Path(video.original_filename).with_suffix('.pdf')
