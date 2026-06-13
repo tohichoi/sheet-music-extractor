@@ -44,9 +44,20 @@ function App() {
   const [startPos, setStartPos] = useState({ x: 0, y: 0 });
   const [cropRect, setCropRect] = useState(null); // { x, y, width, height } 비율 (0~1)
   const videoRef = useRef(null);
+  // 내부용: 잠재적 드래그 여부와 시작 클라이언트 좌표를 저장
+  const maybeDrawingRef = useRef(false);
+  const startClientRef = useRef({ x: 0, y: 0 });
 
   // 체크박스 상태: keyframes 인덱스(0-based)를 저장하는 Set
   const [checkedFrames, setCheckedFrames] = useState(() => new Set());
+  // 명시적 Draw ROI 모드 토글 (persisted in localStorage)
+  const [isDrawMode, setIsDrawMode] = useState(() => {
+    try {
+      return localStorage.getItem('drawMode') === 'true';
+    } catch (e) {
+      return false;
+    }
+  });
 
   const API_BASE_URL = 'http://localhost:8000/api/videos';
   const STATIC_BASE_URL = 'http://localhost:8000';
@@ -266,27 +277,53 @@ function App() {
     const rect = videoRef.current.getBoundingClientRect();
     const x = (e.clientX - rect.left) / rect.width;
     const y = (e.clientY - rect.top) / rect.height;
-    setIsDrawing(true);
+    // Only begin potential drawing when explicit Draw ROI mode is enabled
+    if (!isDrawMode) return;
+    // don't start drawing immediately — allow short clicks (for video controls)
+    maybeDrawingRef.current = true;
+    startClientRef.current = { x: e.clientX, y: e.clientY };
     setStartPos({ x, y });
-    setCropRect({ x, y, width: 0, height: 0 });
+    // cropRect will be created once the user moves beyond the drag threshold
   };
 
   const handleMouseMove = (e) => {
-    if (!isDrawing) return;
-    const rect = videoRef.current.getBoundingClientRect();
-    const currentX = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    const currentY = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
+    // If user hasn't indicated potential drawing, ignore
+    if (!maybeDrawingRef.current && !isDrawing) return;
 
-    setCropRect({
-      x: Math.min(startPos.x, currentX),
-      y: Math.min(startPos.y, currentY),
-      width: Math.abs(currentX - startPos.x),
-      height: Math.abs(currentY - startPos.y),
-    });
+    const rect = videoRef.current.getBoundingClientRect();
+    // If we haven't committed to drawing yet, check movement threshold (in pixels)
+    if (!isDrawing && maybeDrawingRef.current) {
+      const dx = Math.abs(e.clientX - startClientRef.current.x);
+      const dy = Math.abs(e.clientY - startClientRef.current.y);
+      const dragThreshold = 6; // pixels
+      if (dx < dragThreshold && dy < dragThreshold) return;
+      // start drawing now
+      setIsDrawing(true);
+      maybeDrawingRef.current = false;
+      // initialize crop rect at the startPos
+      setCropRect({ x: startPos.x, y: startPos.y, width: 0, height: 0 });
+    }
+
+    // update crop rect while drawing
+    if (isDrawing) {
+      const currentX = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+      const currentY = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
+
+      setCropRect({
+        x: Math.min(startPos.x, currentX),
+        y: Math.min(startPos.y, currentY),
+        width: Math.abs(currentX - startPos.x),
+        height: Math.abs(currentY - startPos.y),
+      });
+    }
   };
 
   const handleMouseUp = () => {
-    setIsDrawing(false);
+    // finalize or cancel drawing
+    if (isDrawing) {
+      setIsDrawing(false);
+    }
+    maybeDrawingRef.current = false;
   };
 
 
@@ -386,6 +423,21 @@ function App() {
     });
   };
 
+  // 명시적 Draw ROI 모드 토글 핸들러
+  const handleToggleDrawMode = () => {
+    setIsDrawMode(prev => {
+      const next = !prev;
+      try { localStorage.setItem('drawMode', next ? 'true' : 'false'); } catch (e) {}
+      if (!next) {
+        // cancel any in-progress or pending drawing when turning off
+        maybeDrawingRef.current = false;
+        setIsDrawing(false);
+        setCropRect(null);
+      }
+      return next;
+    });
+  };
+
   const formatDuration = (sec) => sec ? `${Math.floor(sec / 60)}m ${Math.floor(sec % 60).toString().padStart(2, '0')}s` : '-';
   const formatSize = (bytes) => bytes ? (bytes / (1024 * 1024)).toFixed(2) + ' MB' : '-';
 
@@ -459,17 +511,45 @@ function App() {
         
         {videoPreviewUrl && (
           <div className="mt-4">
-            <p className="text-sm text-slate-500 mb-2">💡 Drag over the video to select the score area. If you skip this, the entire frame will be processed.</p>
+              <div className="flex items-center justify-between mb-2 gap-3">
+                <p className="text-sm text-slate-500 m-0">💡 Drag over the video to select the score area. If you skip this, the entire frame will be processed.</p>
+              </div>
             
             {/* 드래그 영역 컨테이너 */}
             <div 
-              className="relative inline-block border-2 border-slate-300 rounded overflow-hidden cursor-crosshair select-none"
+              className={`relative inline-block border-2 border-slate-300 rounded overflow-hidden ${isDrawMode ? 'cursor-crosshair select-none' : ''}`}
               onMouseDown={handleMouseDown}
               onMouseMove={handleMouseMove}
               onMouseUp={handleMouseUp}
               onMouseLeave={handleMouseUp}
             >
-              <video ref={videoRef} src={videoPreviewUrl} className="max-h-[500px] w-auto pointer-events-none" controls={false} muted />
+              {/* TOP-RIGHT: small toggle switch + tooltip + clear button */}
+              <div className="absolute top-2 right-2 z-20 flex flex-col items-end gap-2">
+                <div className="relative group">
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleToggleDrawMode(); }}
+                    aria-pressed={isDrawMode}
+                    className={`w-10 h-6 rounded-full transition-colors ${isDrawMode ? 'bg-amber-500' : 'bg-slate-200 dark:bg-slate-700'}`}
+                    title={isDrawMode ? 'Draw ROI: ON' : 'Draw ROI: OFF'}
+                  >
+                    <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transform transition-transform ${isDrawMode ? 'translate-x-4' : 'translate-x-0'}`} />
+                  </button>
+                  <div className="absolute -top-8 right-0 opacity-0 group-hover:opacity-100 pointer-events-none bg-slate-800 text-white text-xs rounded py-1 px-2 whitespace-nowrap transition-opacity">
+                    {isDrawMode ? 'Draw ROI: ON — drag to select an area' : 'Draw ROI: OFF — video controls enabled'}
+                  </div>
+                </div>
+                {cropRect && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setCropRect(null); maybeDrawingRef.current = false; setIsDrawing(false); }}
+                    className="text-xs bg-white dark:bg-slate-700 px-2 py-1 rounded border shadow"
+                    title="Clear selected ROI"
+                  >
+                    ✖ Clear ROI
+                  </button>
+                )}
+              </div>
+
+              <video ref={videoRef} src={videoPreviewUrl} className={`max-h-[500px] w-auto ${isDrawMode ? 'pointer-events-none' : 'pointer-events-auto'}`} controls={true} muted />
               
               {/* 그려진 캡처 영역 표시 */}
               {cropRect && (
