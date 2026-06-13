@@ -3,7 +3,7 @@
   <component name="Black">
     <option name="sdkName" value="Python 3.14 virtualenv at C:\Users\tohic\Workspace\sheet-music-extractor\backend\.venv" />
   </component>
-  <component name="ProjectRootManager" version="2" project-jdk-name="sheet-music-extractor" project-jdk-type="Python SDK" />
+  <component name="ProjectRootManager" version="2" project-jdk-name="Python 3.14 (backend)" project-jdk-type="Python SDK" />
   <component name="PythonCompatibilityInspectionAdvertiser">
     <option name="version" value="3" />
   </component>
