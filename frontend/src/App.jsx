@@ -402,16 +402,24 @@ function App() {
         <h1 className="text-3xl font-extrabold tracking-tight bg-gradient-to-r from-blue-600 to-cyan-500 bg-clip-text text-transparent">
           🎵 Sheet Music Extractor
         </h1>
-        <button 
-          onClick={() => setIsDarkMode(!isDarkMode)} 
-          className="w-12 h-12 flex items-center justify-center rounded-full bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 transition-colors text-xl"
-          title="Toggle theme"
-        >
-          {isDarkMode ? '☀️' : '🌙'}
-        </button>
+        <div className="flex gap-3">
+          <button 
+            className={`${btnClass} bg-slate-500 hover:bg-slate-600 text-white shadow-slate-500/30`} 
+            onClick={handleReset}
+          >
+            🔄 Reset view
+          </button>
+          <button 
+            onClick={() => setIsDarkMode(!isDarkMode)} 
+            className="w-12 h-12 flex items-center justify-center rounded-full bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 transition-colors text-xl"
+            title="Toggle theme"
+          >
+            {isDarkMode ? '☀️' : '🌙'}
+            </button>
+        </div>
       </header>
       
-      {/* 테스트 업로드 영역 */}
+      {/* 테스트 업로드 영역
       <div className={`${cardClass} bg-slate-100/50 dark:bg-slate-800/50 flex flex-col md:flex-row justify-between items-center gap-4`}>
         <div>
           <h3 className="text-lg font-bold mb-2 flex items-center gap-2 text-slate-800 dark:text-slate-100">
@@ -435,7 +443,8 @@ function App() {
           </button>
         </div>
       </div>
-
+      */}
+      
       {/* 🌟 파일 업로드 및 ROI 선택 UI 영역 */}
       <div className={cardClass}>
         <h3 className="text-lg font-bold mb-4">📁 1. Select video and crop region</h3>
@@ -488,15 +497,15 @@ function App() {
 
       {/* 파일 업로드 및 상태 표시 */}
       <div className={`${cardClass} ${videoInfo?.status === 'processing' ? 'ring-2 ring-blue-500 shadow-lg shadow-blue-500/10' : ''}`}>
-        <h3 className="text-lg font-bold mb-4 text-slate-800 dark:text-slate-100">📁 Video upload</h3>
+        <h3 className="text-lg font-bold mb-4 text-slate-800 dark:text-slate-100">📁 Processing status</h3>
         
-        <input 
+        {/* <input 
           type="file" 
           accept="video/*" 
           onChange={handleManualUpload} 
           disabled={videoInfo?.status === 'processing'}
           className="block w-full text-sm text-slate-500 dark:text-slate-400 file:mr-4 file:py-2.5 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 dark:file:bg-slate-700 dark:file:text-blue-400 dark:hover:file:bg-slate-600 transition-all cursor-pointer border border-dashed border-slate-300 dark:border-slate-600 rounded-xl p-4 bg-slate-50 dark:bg-slate-800/50"
-        />
+        /> */}
         
         <div className="mt-6 p-5 bg-blue-50/50 dark:bg-slate-900/50 rounded-xl border border-blue-100 dark:border-slate-700">
           <strong className="text-blue-600 dark:text-blue-400 text-lg block mb-2">{status}</strong>
@@ -559,6 +568,17 @@ function App() {
               >
                 ⬇️ Download PDF
               </button>
+            </div>
+          </div>
+
+          {/* Info: only checked images will be included in the PDF */}
+          <div className="mb-6 p-4 rounded-lg bg-white/70 dark:bg-slate-800/60 border border-slate-100 dark:border-slate-700 flex items-center gap-3">
+            <div className="flex-shrink-0 text-2xl">📝</div>
+            <div className="text-sm text-slate-700 dark:text-slate-300">
+              <strong className="font-medium">Include only checked images in the PDF</strong>
+              <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                Use the checkbox at the top-left of each thumbnail to select which pages to include. Selected: <strong className="text-slate-800 dark:text-slate-100">{checkedFrames.size}</strong> / {videoInfo.keyframes.length}
+              </div>
             </div>
           </div>
 
