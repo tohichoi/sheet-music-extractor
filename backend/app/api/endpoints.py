@@ -3,7 +3,7 @@ import shutil
 from pathlib import Path
 from typing import List
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from PIL import Image, ImageDraw, ImageFont
@@ -24,6 +24,17 @@ DEFAULT_FONT_SIZE = 24
 
 VIDEO_DIR.mkdir(parents=True, exist_ok=True)
 PDF_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def parse_comma_separated_ints(keyFrames: str = Query(default="", description="콤마로 구분된 숫자들 (예: 1,2,3,4)")) -> list[int]:
+    if not keyFrames:
+        return []
+    try:
+        # 콤마로 나누고 양쪽 공백을 제거한 뒤 정수로 변환
+        return [int(item.strip()) for item in keyFrames.split(",")]
+    except ValueError:
+        # 숫자가 아닌 값이 섞여 있을 경우 에러 처리
+        raise HTTPException(status_code=422, detail="keyFrames must be a comma-separated list of integers.")
 
 
 def trim_white_margin(image: Image.Image, tol: int = 240) -> Image.Image:
@@ -91,6 +102,7 @@ def get_pdf_path(
     margin_left: int,
     margin_right: int,
     inner_margin: int,
+    keyframe_ids: List[int],
 ) -> Path:
     filename = (
         f'sheet_music_video_{video_id}'
@@ -98,14 +110,23 @@ def get_pdf_path(
         f'_mb{margin_bottom}'
         f'_ml{margin_left}'
         f'_mr{margin_right}'
-        f'_im{inner_margin}.pdf'
+        f'_im{inner_margin}'
+        f'_{",".join(str(x) for x in keyframe_ids)}'
+        '.pdf'
     )
     return PDF_DIR / filename
 
 
-def process_keyframes_to_images(keyframes, content_width: int) -> List[Image.Image]:
+def process_keyframes_to_images(keyframes, keyframe_ids: List[int], content_width: int) -> List[Image.Image]:
     processed_images: List[Image.Image] = []
-    for keyframe in keyframes:
+
+    if len(keyframe_ids) == 0:
+        keyframe_ids = range(len(keyframes))
+
+    for index, keyframe in enumerate(keyframes):
+        if index not in keyframe_ids:
+            continue
+
         image_path = Path(keyframe.image_filepath)
         if not image_path.exists():
             continue
@@ -173,8 +194,9 @@ def get_db_video(video_id: int, db: Session) -> Video:
 
 def save_uploaded_video(upload_file: UploadFile, file_hash: str) -> Path:
     destination = VIDEO_DIR / f'{file_hash}_{upload_file.filename}'
-    with destination.open('wb+') as buffer:
-        shutil.copyfileobj(upload_file.file, buffer)
+    if not destination.exists():
+        with destination.open('wb+') as buffer:
+            shutil.copyfileobj(upload_file.file, buffer)
     return destination
 
 
@@ -220,28 +242,41 @@ def create_video_record(
 
 @router.post('/upload', response_model=VideoResponse)
 async def upload_video(
-    background_tasks: BackgroundTasks,
-    file: UploadFile = File(...),
-    db: Session = Depends(get_db),
+        background_tasks: BackgroundTasks,
+        file: UploadFile = File(...),
+        crop_x: float = Form(0.0),
+        crop_y: float = Form(0.0),
+        crop_w: float = Form(1.0),
+        crop_h: float = Form(1.0),
+        db: Session = Depends(get_db),
 ) -> Video:
+    # 1. 파일 원본의 고유 해시(Base Hash) 추출
     md5_hash = hashlib.md5()
     while chunk := await file.read(8192):
         md5_hash.update(chunk)
-    file_hash = md5_hash.hexdigest()
-    await file.seek(0)
+    base_file_hash = md5_hash.hexdigest()
+    await file.seek(0) # 커서 초기화
 
-    existing_video = db.query(Video).filter(Video.file_hash == file_hash).first()
+    # 🌟 2. 원본 해시와 ROI를 결합한 새로운 '작업 해시(Task Hash)' 생성
+    task_data_string = f"{base_file_hash}_{crop_x:.4f}_{crop_y:.4f}_{crop_w:.4f}_{crop_h:.4f}"
+    task_hash = hashlib.md5(task_data_string.encode()).hexdigest()
+
+    # 이미 정확히 동일한 영상 + 동일한 ROI로 작업된 결과가 있는지 확인
+    existing_video = db.query(Video).filter(Video.file_hash == task_hash).first()
     if existing_video:
         return existing_video
 
-    saved_path = save_uploaded_video(file, file_hash)
+    # 🌟 3. 원본 비디오 파일은 base_file_hash 기준으로 단 1번만 저장 (중복 저장 방지)
+    saved_path = save_uploaded_video(file, base_file_hash)
     file_size = saved_path.stat().st_size
     width, height, fps, duration = read_video_metadata(saved_path)
+
+    # DB에는 task_hash로 기록하여 독립된 결과물로 취급
     new_video = create_video_record(
         db=db,
         original_filename=file.filename,
         stored_filepath=str(saved_path),
-        file_hash=file_hash,
+        file_hash=task_hash,
         file_size=file_size,
         width=width,
         height=height,
@@ -249,7 +284,14 @@ async def upload_video(
         fps=fps,
     )
 
-    background_tasks.add_task(process_video_background, new_video.id)
+    # 🌟 4. 백그라운드 워커에 base_file_hash도 함께 전달하여 캐시 폴더를 찾게 함
+    background_tasks.add_task(
+        process_video_background,
+        video_id=new_video.id,
+        crop_rect=(crop_x, crop_y, crop_w, crop_h),
+        base_file_hash=base_file_hash # 새롭게 추가
+    )
+
     return new_video
 
 
@@ -267,6 +309,7 @@ def export_keyframes_to_pdf(
     marginLeft: int = Query(20),
     marginRight: int = Query(20),
     innerMargin: int = Query(20),
+    keyFrames: List[int] = Depends(parse_comma_separated_ints),
 ) -> FileResponse:
     video = get_db_video(video_id, db)
     if not video.keyframes:
@@ -279,12 +322,15 @@ def export_keyframes_to_pdf(
         margin_left=marginLeft,
         margin_right=marginRight,
         inner_margin=innerMargin,
+        keyframe_ids=keyFrames,
     )
+
+    download_filename = Path(video.original_filename).with_suffix('.pdf')
     if pdf_path.exists():
-        return FileResponse(path=str(pdf_path), filename=pdf_path.name, media_type='application/pdf')
+        return FileResponse(path=str(pdf_path), filename=download_filename.name, media_type='application/pdf')
 
     content_width = A4_WIDTH - (marginLeft + marginRight)
-    processed_images = process_keyframes_to_images(video.keyframes, content_width)
+    processed_images = process_keyframes_to_images(video.keyframes, keyFrames, content_width)
     pdf_pages = build_pdf_pages(
         processed_images,
         page_width=A4_WIDTH,
@@ -297,4 +343,48 @@ def export_keyframes_to_pdf(
     )
 
     save_pdf(pdf_pages, pdf_path)
-    return FileResponse(path=str(pdf_path), filename=pdf_path.name, media_type='application/pdf')
+    return FileResponse(path=str(pdf_path), filename=download_filename.name, media_type='application/pdf')
+
+@router.get('/{video_id}/delete')
+def delete_video(video_id: int, db: Session = Depends(get_db)):
+    video = get_db_video(video_id, db)
+
+    # 1. 연관된 PDF 파일들 삭제
+    # 파일명이 'sheet_music_video_{video_id}_' 로 시작하는 모든 PDF 검색 및 삭제
+    for pdf_file in PDF_DIR.glob(f'sheet_music_video_{video_id}_*.pdf'):
+        pdf_file.unlink(missing_ok=True)
+
+    # 2. 해당 비디오 전용 키프레임 및 임시 폴더 삭제
+    keyframe_dir = Path(f'storage/keyframes/{video_id}')
+    if keyframe_dir.exists() and keyframe_dir.is_dir():
+        shutil.rmtree(keyframe_dir, ignore_errors=True)
+
+    temp_dir = Path(f'storage/temp/{video_id}')
+    if temp_dir.exists() and temp_dir.is_dir():
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+    # 3. 원본 비디오 파일 및 공용 캐시 폴더 삭제 (안전 검사)
+    # 다른 ROI 설정으로 동일한 원본 파일을 참조하는 Video 레코드가 있는지 확인합니다.
+    shared_count = db.query(Video).filter(Video.stored_filepath == video.stored_filepath).count()
+
+    if shared_count <= 1:
+        # 아무도 이 원본 파일을 공유하지 않는다면(나 혼자 쓴다면) 원본 파일 삭제
+        video_file = Path(video.stored_filepath)
+        if video_file.exists():
+            video_file.unlink(missing_ok=True)
+
+        # 파일명 구조({base_file_hash}_{filename})에서 base_file_hash를 역추적하여 캐시 폴더도 삭제
+        base_file_hash = video_file.name.split('_')[0]
+        cache_dir = Path(f'storage/cache/iframes/{base_file_hash}')
+        if cache_dir.exists() and cache_dir.is_dir():
+            shutil.rmtree(cache_dir, ignore_errors=True)
+
+    # 4. 데이터베이스 레코드 삭제
+    # KeyFrame 테이블 레코드는 삭제 전 연결된 외래키를 통해 지우거나 명시적으로 지웁니다.
+    from app.models.video import KeyFrame
+    db.query(KeyFrame).filter(KeyFrame.video_id == video_id).delete()
+
+    db.delete(video)
+    db.commit()
+
+    return {"status": "success", "message": f"비디오(ID: {video_id}) 및 관련 데이터가 모두 삭제되었습니다."}
