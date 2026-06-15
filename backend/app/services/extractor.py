@@ -34,7 +34,8 @@ def save_keyframes_to_db(db: Session, video_id: int, keyframes_data: List[Dict])
 # ==========================================
 # 2. 단위 기능 헬퍼 함수
 # ==========================================
-def get_timestamps_via_ffprobe(file_path: str) -> List[float]:
+# 🌟 1. FFprobe 타임스탬프 추출 함수 (파이썬 필터링 방식으로 에러 완벽 해결)
+def get_timestamps_via_ffprobe(file_path: str, start_time: Optional[float] = None, end_time: Optional[float] = None) -> List[float]:
     probe_cmd = [
         "ffprobe", "-loglevel", "error",
         "-skip_frame", "nokey", "-select_streams", "v:0",
@@ -42,15 +43,31 @@ def get_timestamps_via_ffprobe(file_path: str) -> List[float]:
         file_path
     ]
     probe_output = subprocess.check_output(probe_cmd).decode('utf-8')
-    return [float(line.strip()) for line in probe_output.split('\n') if line.strip()]
+    all_timestamps = [float(line.strip()) for line in probe_output.split('\n') if line.strip()]
 
-def extract_iframes_via_ffmpeg(file_path: str, temp_dir: str) -> None:
-    ffmpeg_cmd = [
-        "ffmpeg", "-y", "-i", file_path,
+    # 🌟 Python에서 구간을 정확하게 필터링하여 ffprobe 옵션 에러 방지
+    # ffmpeg이 추출하는 프레임 동작(-ss, -to)과 100% 완벽하게 매칭됩니다.
+    s_time = start_time if start_time is not None else 0.0
+    e_time = end_time if end_time is not None else float('inf')
+
+    return [ts for ts in all_timestamps if s_time <= ts <= e_time]
+
+
+# 🌟 2. FFmpeg 이미지 추출 함수 (유지 - ffmpeg은 -ss 와 -to를 정상 지원합니다)
+def extract_iframes_via_ffmpeg(file_path: str, temp_dir: str, start_time: Optional[float] = None, end_time: Optional[float] = None) -> None:
+    ffmpeg_cmd = ["ffmpeg", "-y"]
+
+    if start_time is not None and start_time > 0:
+        ffmpeg_cmd.extend(["-ss", str(start_time)])
+    if end_time is not None and end_time > 0:
+        ffmpeg_cmd.extend(["-to", str(end_time)])
+
+    ffmpeg_cmd.extend([
+        "-i", file_path,
         "-vf", "select='eq(pict_type,PICT_TYPE_I)'",
         "-vsync", "vfr", "-q:v", "2",
         os.path.join(temp_dir, "iframe_%04d.jpg")
-    ]
+    ])
     subprocess.run(ffmpeg_cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
 
 def crop_image_by_ratio(frame: np.ndarray, crop_rect: tuple) -> np.ndarray:
@@ -170,17 +187,19 @@ def perform_clustering(features: List[np.ndarray]) -> np.ndarray:
 # ==========================================
 # 3. 핵심 파일 처리 루틴 (DB 의존성 없음)
 # ==========================================
+# 🌟 3. 핵심 코어 함수 (파라미터 추가 및 헬퍼 함수 호출부 수정)
 def extract_keyframes_core(
         file_path: str,
         output_dir: str,
         temp_dir: str,
-        cache_dir: str, # 🌟 공용 캐시 경로 분리 수신
+        cache_dir: str,
         crop_rect: tuple,
+        start_time: Optional[float] = None, # 파라미터 추가
+        end_time: Optional[float] = None,   # 파라미터 추가
         progress_callback: Optional[Callable[[float], None]] = None
 ) -> List[Dict]:
     if progress_callback: progress_callback(10.0)
 
-    # 🌟 1. I-Frame 공용 캐시 확인 및 '개인 폴더'로 복사
     timestamps_file = os.path.join(cache_dir, "timestamps.txt")
     cached_files = [f for f in os.listdir(cache_dir) if f.startswith("iframe_")] if os.path.exists(cache_dir) else []
 
@@ -192,12 +211,14 @@ def extract_keyframes_core(
     else:
         print("⏳ [Cache Miss] FFmpeg로 I-Frame 추출을 시작합니다...")
         os.makedirs(cache_dir, exist_ok=True)
-        timestamps = get_timestamps_via_ffprobe(file_path)
+
+        # 수정된 함수들에 start_time과 end_time을 넘겨줍니다.
+        timestamps = get_timestamps_via_ffprobe(file_path, start_time, end_time)
         with open(timestamps_file, 'w') as f:
             for ts in timestamps:
                 f.write(f"{ts}\n")
-        # 공용 캐시에 추출 후 개인 임시 폴더로 복사
-        extract_iframes_via_ffmpeg(file_path, cache_dir)
+
+        extract_iframes_via_ffmpeg(file_path, cache_dir, start_time, end_time)
         shutil.copytree(cache_dir, temp_dir, dirs_exist_ok=True)
 
     if progress_callback: progress_callback(40.0)
@@ -262,7 +283,13 @@ def extract_keyframes_core(
 # ==========================================
 # 4. 백그라운드 오케스트레이터
 # ==========================================
-def process_video_background(video_id: int, crop_rect: tuple = (0.0, 0.0, 1.0, 1.0), base_file_hash: str = ""):
+def process_video_background(
+    video_id: int,
+    crop_rect: tuple = (0.0, 0.0, 1.0, 1.0),
+    base_file_hash: str = "",
+    start_time: Optional[float] = None, # 🌟 추가
+    end_time: Optional[float] = None    # 🌟 추가
+):
     db: Session = SessionLocal()
     try:
         video = db.query(Video).filter(Video.id == video_id).first()
@@ -273,9 +300,12 @@ def process_video_background(video_id: int, crop_rect: tuple = (0.0, 0.0, 1.0, 1
 
         video_keyframe_dir = os.path.join(KEYFRAME_DIR, str(video.id))
 
-        # 🌟 캐시 폴더와 개인 작업 폴더 분리
+        # 🌟 캐시 폴더 이름에 시간 구간 반영 (캐시 꼬임 완벽 방지)
         if base_file_hash:
-            cache_dir = os.path.join(CACHE_DIR, base_file_hash)
+            s_str = f"{start_time:.2f}" if start_time else "start"
+            e_str = f"{end_time:.2f}" if end_time else "end"
+            cache_folder_name = f"{base_file_hash}_{s_str}_{e_str}"
+            cache_dir = os.path.join(CACHE_DIR, cache_folder_name)
         else:
             cache_dir = os.path.join(CACHE_DIR, f"temp_{video.id}")
 
@@ -287,12 +317,15 @@ def process_video_background(video_id: int, crop_rect: tuple = (0.0, 0.0, 1.0, 1
         def update_progress(p: float):
             update_video_status(db, video, "processing", p)
 
+        # 🌟 핵심 코어에 시간 구간 파라미터 전달
         keyframes_data = extract_keyframes_core(
             file_path=video.stored_filepath,
             output_dir=video_keyframe_dir,
             temp_dir=temp_video_dir,
-            cache_dir=cache_dir, # 캐시 경로 전달
+            cache_dir=cache_dir,
             crop_rect=crop_rect,
+            start_time=start_time, # 추가
+            end_time=end_time,     # 추가
             progress_callback=update_progress
         )
 

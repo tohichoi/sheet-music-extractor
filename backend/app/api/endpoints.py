@@ -2,6 +2,7 @@ import hashlib
 import shutil
 from pathlib import Path
 from typing import List
+from typing import Optional # 상단 import 영역에 추가
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
@@ -248,6 +249,8 @@ async def upload_video(
         crop_y: float = Form(0.0),
         crop_w: float = Form(1.0),
         crop_h: float = Form(1.0),
+        start_time: Optional[float] = Form(None), # 🌟 추가: 시작 시간
+        end_time: Optional[float] = Form(None),   # 🌟 추가: 종료 시간
         db: Session = Depends(get_db),
 ) -> Video:
     # 1. 파일 원본의 고유 해시(Base Hash) 추출
@@ -257,16 +260,18 @@ async def upload_video(
     base_file_hash = md5_hash.hexdigest()
     await file.seek(0) # 커서 초기화
 
-    # 🌟 2. 원본 해시와 ROI를 결합한 새로운 '작업 해시(Task Hash)' 생성
-    task_data_string = f"{base_file_hash}_{crop_x:.4f}_{crop_y:.4f}_{crop_w:.4f}_{crop_h:.4f}"
+    # 🌟 2. 원본 해시 + ROI + '시간 구간'을 결합한 새로운 '작업 해시(Task Hash)' 생성
+    s_time_str = f"{start_time:.2f}" if start_time else "None"
+    e_time_str = f"{end_time:.2f}" if end_time else "None"
+    task_data_string = f"{base_file_hash}_{crop_x:.4f}_{crop_y:.4f}_{crop_w:.4f}_{crop_h:.4f}_{s_time_str}_{e_time_str}"
     task_hash = hashlib.md5(task_data_string.encode()).hexdigest()
 
-    # 이미 정확히 동일한 영상 + 동일한 ROI로 작업된 결과가 있는지 확인
+    # 이미 정확히 동일한 영상 + 동일한 ROI + 동일한 구간으로 작업된 결과가 있는지 확인
     existing_video = db.query(Video).filter(Video.file_hash == task_hash).first()
     if existing_video:
         return existing_video
 
-    # 🌟 3. 원본 비디오 파일은 base_file_hash 기준으로 단 1번만 저장 (중복 저장 방지)
+    # 3. 원본 비디오 파일은 base_file_hash 기준으로 단 1번만 저장 (중복 저장 방지)
     saved_path = save_uploaded_video(file, base_file_hash)
     file_size = saved_path.stat().st_size
     width, height, fps, duration = read_video_metadata(saved_path)
@@ -284,12 +289,14 @@ async def upload_video(
         fps=fps,
     )
 
-    # 🌟 4. 백그라운드 워커에 base_file_hash도 함께 전달하여 캐시 폴더를 찾게 함
+    # 🌟 4. 백그라운드 워커에 시간 구간 파라미터 함께 전달
     background_tasks.add_task(
         process_video_background,
         video_id=new_video.id,
         crop_rect=(crop_x, crop_y, crop_w, crop_h),
-        base_file_hash=base_file_hash # 새롭게 추가
+        base_file_hash=base_file_hash,
+        start_time=start_time, # 추가
+        end_time=end_time      # 추가
     )
 
     return new_video

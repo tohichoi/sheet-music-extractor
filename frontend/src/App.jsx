@@ -1,56 +1,43 @@
 import { useState, useEffect, useRef } from 'react';
 
-// 🌟 새로 추가: 로컬 스토리지에서 숫자 값을 안전하게 불러오는 헬퍼 함수
 const getSavedNumber = (key, defaultValue) => {
   const saved = localStorage.getItem(key);
-  // 값이 0인 경우도 정상적인 여백 값일 수 있으므로 null 체크를 명확히 합니다.
   return saved !== null ? Number(saved) : defaultValue;
 };
 
-
 function App() {
-  // 🌟 변경 전: const [isDarkMode, setIsDarkMode] = useState(false);
-  // 🌟 변경 후: 로컬 스토리지에서 이전 테마 설정 불러오기
   const [isDarkMode, setIsDarkMode] = useState(() => {
     const savedTheme = localStorage.getItem('theme');
-    // 사용자의 OS 환경이 기본적으로 다크모드인지 확인하는 로직 추가 가능
-    // 여기서는 저장된 값이 'dark'이면 true, 아니면 false를 반환합니다.
     return savedTheme === 'dark';
   });
   
   const [status, setStatus] = useState('Idle');
   const [videoInfo, setVideoInfo] = useState(null);
   const [selectedImage, setSelectedImage] = useState(null); 
-  // const [thumbSize, setThumbSize] = useState(250); 
   const [thumbSize, setThumbSize] = useState(() => getSavedNumber('thumbSize', 250));
   
-  // const [marginTop, setMarginTop] = useState(50);
-  // const [marginBottom, setMarginBottom] = useState(50);
-  // const [marginLeft, setMarginLeft] = useState(50);
-  // const [marginRight, setMarginRight] = useState(50);
-  // const [innerMargin, setInnerMargin] = useState(10);
   const [marginTop, setMarginTop] = useState(() => getSavedNumber('marginTop', 50));
   const [marginBottom, setMarginBottom] = useState(() => getSavedNumber('marginBottom', 50));
   const [marginLeft, setMarginLeft] = useState(() => getSavedNumber('marginLeft', 50));
   const [marginRight, setMarginRight] = useState(() => getSavedNumber('marginRight', 50));
   const [innerMargin, setInnerMargin] = useState(() => getSavedNumber('innerMargin', 10));
 
-  // 🌟 ROI 선택을 위한 상태 추가
   const [videoFile, setVideoFile] = useState(null);
   const [videoPreviewUrl, setVideoPreviewUrl] = useState(null);
+  const [videoDuration, setVideoDuration] = useState(0); // 🌟 추가: 로드된 비디오의 전체 길이
   
-  // 드래그 상태 관리
+  // 🌟 시간 구간 선택 상태 추가
+  const [startTime, setStartTime] = useState(0);
+  const [endTime, setEndTime] = useState(0);
+  
   const [isDrawing, setIsDrawing] = useState(false);
   const [startPos, setStartPos] = useState({ x: 0, y: 0 });
-  const [cropRect, setCropRect] = useState(null); // { x, y, width, height } 비율 (0~1)
+  const [cropRect, setCropRect] = useState(null); 
   const videoRef = useRef(null);
-  // 내부용: 잠재적 드래그 여부와 시작 클라이언트 좌표를 저장
   const maybeDrawingRef = useRef(false);
   const startClientRef = useRef({ x: 0, y: 0 });
 
-  // 체크박스 상태: keyframes 인덱스(0-based)를 저장하는 Set
   const [checkedFrames, setCheckedFrames] = useState(() => new Set());
-  // 명시적 Draw ROI 모드 토글 (persisted in localStorage)
   const [isDrawMode, setIsDrawMode] = useState(() => {
     try {
       return localStorage.getItem('drawMode') === 'true';
@@ -62,10 +49,8 @@ function App() {
   const API_BASE_URL = 'http://localhost:8000/api/videos';
   const STATIC_BASE_URL = 'http://localhost:8000';
 
-  // 파일명 파싱 및 OS별 안전한 파일명 생성 헬퍼
   const parseFilenameFromContentDisposition = (cd) => {
     if (!cd) return null;
-    // RFC6266: filename* and filename
     const filenameStar = /filename\*=(?:UTF-8'')?([^;\n]+)/i.exec(cd);
     if (filenameStar) {
       try {
@@ -91,11 +76,8 @@ function App() {
   };
 
   const sanitizeForWindows = (name) => {
-    // Windows에서 금지된 문자: <>:"/\\|?* 및 제어문자
     let s = name.replace(/[<>:\\"\/\|\?\*\x00-\x1F]/g, '_');
-    // 파일명 끝의 공백 또는 마침표 제거
     s = s.replace(/[\.\s]+$/g, '');
-    // 예약어(CON, PRN, AUX, NUL, COM1..9, LPT1..9)
     const base = s.split('.')[0].toUpperCase();
     const reserved = ['CON','PRN','AUX','NUL'];
     for (let i=1;i<=9;i++){ reserved.push('COM'+i); reserved.push('LPT'+i); }
@@ -104,9 +86,7 @@ function App() {
   };
 
   const sanitizeForLinux = (name) => {
-    // '/'와 널 문자 제거, 제어문자 제거
     let s = name.replace(/[\x00/\x00-\x1F]/g, '_');
-    // 기타 안전 처리
     s = s.replace(/\s+$/g, '');
     return s || 'download';
   };
@@ -119,13 +99,9 @@ function App() {
 
   const getSafeFilename = (rawName) => {
     let name = (rawName || '').toString();
-    // Limit length to 200 to avoid filesystem limits
     if (name.length > 200) name = name.slice(0, 200);
-    if (detectIsWindows()) {
-      name = sanitizeForWindows(name);
-    } else {
-      name = sanitizeForLinux(name);
-    }
+    if (detectIsWindows()) name = sanitizeForWindows(name);
+    else name = sanitizeForLinux(name);
     name = ensurePdfExtension(name);
     return name;
   };
@@ -133,12 +109,9 @@ function App() {
   useEffect(() => {
     document.documentElement.classList.toggle('dark', isDarkMode);
     document.body.classList.toggle('dark', isDarkMode);
-    
-    // 🌟 새로 추가됨: 변경된 테마를 로컬 스토리지에 저장
     localStorage.setItem('theme', isDarkMode ? 'dark' : 'light');
   }, [isDarkMode]);
 
-  // 🌟 새로 추가됨: 앱이 처음 켜질 때 로컬 스토리지에서 마지막 작업 비디오 ID를 찾아 불러옴
   useEffect(() => {
     const savedVideoId = localStorage.getItem('lastVideoId');
     if (savedVideoId) {
@@ -156,13 +129,12 @@ function App() {
         })
         .catch(error => {
           console.error("Failed to load previous data:", error);
-          localStorage.removeItem('lastVideoId'); // Remove invalid saved data
+          localStorage.removeItem('lastVideoId'); 
           setStatus('Idle');
         });
     }
   }, []);
 
-  // 백엔드 폴링 로직
   useEffect(() => {
     let intervalId;
     const checkProcessingStatus = async () => {
@@ -174,9 +146,8 @@ function App() {
         const data = await response.json();
         setVideoInfo(data);
 
-        if (data.status === 'processing') {
-          setStatus('⚙️ Extracting sheet music...');
-        } else if (data.status === 'completed') {
+        if (data.status === 'processing') setStatus('⚙️ Extracting sheet music...');
+        else if (data.status === 'completed') {
           setStatus('✅ Extraction completed!');
           clearInterval(intervalId);
         } else if (data.status === 'failed') {
@@ -191,17 +162,10 @@ function App() {
     if (videoInfo && (videoInfo.status === 'uploaded' || videoInfo.status === 'processing')) {
       intervalId = setInterval(checkProcessingStatus, 2000);
     }
-    return () => {
-      if (intervalId) clearInterval(intervalId);
-    };
+    return () => { if (intervalId) clearInterval(intervalId); };
   }, [videoInfo?.id, videoInfo?.status]);
 
-  // 🌟 새로 추가: 썸네일 크기가 변경될 때마다 로컬 스토리지에 자동 저장
-  useEffect(() => {
-    localStorage.setItem('thumbSize', thumbSize);
-  }, [thumbSize]);
-
-  // 🌟 새로 추가: PDF 설정값이 하나라도 변경될 때마다 로컬 스토리지에 자동 저장
+  useEffect(() => { localStorage.setItem('thumbSize', thumbSize); }, [thumbSize]);
   useEffect(() => {
     localStorage.setItem('marginTop', marginTop);
     localStorage.setItem('marginBottom', marginBottom);
@@ -210,21 +174,28 @@ function App() {
     localStorage.setItem('innerMargin', innerMargin);
   }, [marginTop, marginBottom, marginLeft, marginRight, innerMargin]);
   
-  // 비디오 정보가 로드될 때 keyframes가 있으면 기본으로 모두 체크되게 초기화
   useEffect(() => {
     if (videoInfo && Array.isArray(videoInfo.keyframes)) {
       const all = new Set(videoInfo.keyframes.map((_, i) => i));
       setCheckedFrames(all);
-    } else {
-      setCheckedFrames(new Set());
-    }
+    } else setCheckedFrames(new Set());
   }, [videoInfo?.keyframes?.length]);
   
+  // 🌟 비디오 로드 시 전체 길이 설정
+  const handleVideoLoadedMetadata = () => {
+    if (videoRef.current) {
+      const duration = videoRef.current.duration;
+      setVideoDuration(duration);
+      setStartTime(0);
+      setEndTime(duration);
+    }
+  };
+
   const uploadVideo = async (fileToUpload) => {
     setStatus('🚀 Uploading...');
     let formData = new FormData();
     formData.append('file', fileToUpload);
-    // If crop region is selected, send the ratio. Otherwise use full frame (0,0,1,1).
+    
     if (cropRect && cropRect.width > 0.05 && cropRect.height > 0.05) {
       formData.append('crop_x', cropRect.x.toFixed(4));
       formData.append('crop_y', cropRect.y.toFixed(4));
@@ -236,6 +207,10 @@ function App() {
       formData.append('crop_w', 1.0);
       formData.append('crop_h', 1.0);
     }
+
+    // 🌟 시간 구간 파라미터 추가
+    formData.append('start_time', startTime.toFixed(2));
+    formData.append('end_time', endTime.toFixed(2));
 
     try {
       const response = await fetch(`${API_BASE_URL}/upload`, {
@@ -251,60 +226,46 @@ function App() {
       else setStatus('📁 Upload complete (waiting)');
       
       setVideoInfo(data);
-
-      // 🌟 새로 추가됨: 성공적으로 업로드/조회 후 ID를 브라우저에 저장
-      if (data.id) {
-        localStorage.setItem('lastVideoId', data.id);
-      }
+      if (data.id) localStorage.setItem('lastVideoId', data.id);
     } catch (error) {
       console.error(error);
       setStatus(`Error: ${error.message}`);
     }
   };
 
-  // 파일 선택 처리
   const handleManualUpload = (e) => {
     const file = e.target.files[0];
     if (file) {
       setVideoFile(file);
       setVideoPreviewUrl(URL.createObjectURL(file));
-      setCropRect(null); // 새로운 영상 업로드 시 크롭 초기화
+      setCropRect(null); 
     }
   };
 
-  // 🌟 마우스 드래그 이벤트 핸들러
   const handleMouseDown = (e) => {
     const rect = videoRef.current.getBoundingClientRect();
     const x = (e.clientX - rect.left) / rect.width;
     const y = (e.clientY - rect.top) / rect.height;
-    // Only begin potential drawing when explicit Draw ROI mode is enabled
     if (!isDrawMode) return;
-    // don't start drawing immediately — allow short clicks (for video controls)
     maybeDrawingRef.current = true;
     startClientRef.current = { x: e.clientX, y: e.clientY };
     setStartPos({ x, y });
-    // cropRect will be created once the user moves beyond the drag threshold
   };
 
   const handleMouseMove = (e) => {
-    // If user hasn't indicated potential drawing, ignore
     if (!maybeDrawingRef.current && !isDrawing) return;
 
     const rect = videoRef.current.getBoundingClientRect();
-    // If we haven't committed to drawing yet, check movement threshold (in pixels)
     if (!isDrawing && maybeDrawingRef.current) {
       const dx = Math.abs(e.clientX - startClientRef.current.x);
       const dy = Math.abs(e.clientY - startClientRef.current.y);
-      const dragThreshold = 6; // pixels
+      const dragThreshold = 6; 
       if (dx < dragThreshold && dy < dragThreshold) return;
-      // start drawing now
       setIsDrawing(true);
       maybeDrawingRef.current = false;
-      // initialize crop rect at the startPos
       setCropRect({ x: startPos.x, y: startPos.y, width: 0, height: 0 });
     }
 
-    // update crop rect while drawing
     if (isDrawing) {
       const currentX = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
       const currentY = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
@@ -319,52 +280,13 @@ function App() {
   };
 
   const handleMouseUp = () => {
-    // finalize or cancel drawing
-    if (isDrawing) {
-      setIsDrawing(false);
-    }
+    if (isDrawing) setIsDrawing(false);
     maybeDrawingRef.current = false;
   };
 
-
-  // 🌟 실제 서버로 전송하는 함수
   const executeUpload = async () => {
-    if (!videoFile)
-      return;
-    
-    // setStatus('🚀 업로드 중...');
-    
-    // const formData = new FormData();
-    // formData.append('file', videoFile);
-    
-    // // 크롭 영역이 지정되었다면 해당 비율을 폼 데이터로 전송, 없으면 전체(0,0,1,1) 전송
-    // if (cropRect && cropRect.width > 0.05 && cropRect.height > 0.05) {
-    //   formData.append('crop_x', cropRect.x.toFixed(4));
-    //   formData.append('crop_y', cropRect.y.toFixed(4));
-    //   formData.append('crop_w', cropRect.width.toFixed(4));
-    //   formData.append('crop_h', cropRect.height.toFixed(4));
-    // } else {
-    //   formData.append('crop_x', 0.0);
-    //   formData.append('crop_y', 0.0);
-    //   formData.append('crop_w', 1.0);
-    //   formData.append('crop_h', 1.0);
-    // }
-
-    uploadVideo(videoFile); // 업로드 로직을 별도의 함수로 분리하여 재사용 가능하게 함
-  };
-
-
-  const handleAutoTestUpload = async () => {
-    setStatus('Loading test file...');
-    try {
-      const response = await fetch('/data/test_video.webm');
-      if (!response.ok) throw new Error('Test file not found');
-      const blob = await response.blob();
-      uploadVideo(new File([blob], "test_video.webm", { type: "video/webm" }));
-    } catch (error) {
-      console.error(error);
-      setStatus(`Test load error: ${error.message}`);
-    }
+    if (!videoFile) return;
+    uploadVideo(videoFile); 
   };
 
   const handleExportPDF = async () => {
@@ -373,8 +295,6 @@ function App() {
       setStatus('📄 Generating PDF...');
       const params = new URLSearchParams({ marginTop, marginBottom, marginLeft, marginRight, innerMargin });
 
-      // 선택된(체크된) 프레임 인덱스를 1-based로 변환하여 keyFrames 쿼리 파라미터로 전달
-      // const selected = Array.from(checkedFrames).sort((a, b) => a - b).map(i => i + 1);
       const selected = Array.from(checkedFrames).sort((a, b) => a - b).map(i => i);
       if (selected.length > 0) params.append('keyFrames', selected.join(','));
 
@@ -382,7 +302,6 @@ function App() {
       const response = await fetch(`${API_BASE_URL}/${videoInfo.id}/pdf?${queryParams}`);
       if (!response.ok) throw new Error('PDF generation failed');
 
-      // try to obtain filename from headers, fallback to server-provided original filename or id-based name
       const cd = response.headers.get('content-disposition');
       const parsed = parseFilenameFromContentDisposition(cd);
       const fallback = videoInfo?.original_filename ? videoInfo.original_filename : `sheet_music_${videoInfo.id}.pdf`;
@@ -406,14 +325,14 @@ function App() {
     }
   };
 
-  // 🌟 새로 추가됨: 아예 초기화하고 싶을 때 사용하는 함수
   const handleReset = () => {
     localStorage.removeItem('lastVideoId');
     setVideoInfo(null);
     setStatus('Idle');
+    setVideoFile(null);
+    setVideoPreviewUrl(null);
   };
 
-  // 토글 체크박스 핸들러
   const toggleFrameChecked = (index) => {
     setCheckedFrames(prev => {
       const next = new Set(prev);
@@ -423,13 +342,11 @@ function App() {
     });
   };
 
-  // 명시적 Draw ROI 모드 토글 핸들러
   const handleToggleDrawMode = () => {
     setIsDrawMode(prev => {
       const next = !prev;
       try { localStorage.setItem('drawMode', next ? 'true' : 'false'); } catch (e) {}
       if (!next) {
-        // cancel any in-progress or pending drawing when turning off
         maybeDrawingRef.current = false;
         setIsDrawing(false);
         setCropRect(null);
@@ -438,69 +355,63 @@ function App() {
     });
   };
 
-  const formatDuration = (sec) => sec ? `${Math.floor(sec / 60)}m ${Math.floor(sec % 60).toString().padStart(2, '0')}s` : '-';
+  const formatDurationStr = (sec) => {
+    if (isNaN(sec)) return '00:00';
+    const m = Math.floor(sec / 60);
+    const s = Math.floor(sec % 60).toString().padStart(2, '0');
+    return `${m}:${s}`;
+  };
+
+  const formatDurationInfo = (sec) => sec ? `${Math.floor(sec / 60)}m ${Math.floor(sec % 60).toString().padStart(2, '0')}s` : '-';
   const formatSize = (bytes) => bytes ? (bytes / (1024 * 1024)).toFixed(2) + ' MB' : '-';
 
-  // 공통 Tailwind 클래스 모음
+  // 🌟 시간 슬라이더 핸들러
+  const handleStartTimeChange = (e) => {
+    const val = Number(e.target.value);
+    if (val < endTime) {
+      setStartTime(val);
+      if (videoRef.current) videoRef.current.currentTime = val; // 비디오 화면도 같이 이동
+    }
+  };
+
+  const handleEndTimeChange = (e) => {
+    const val = Number(e.target.value);
+    if (val > startTime) {
+      setEndTime(val);
+      if (videoRef.current) videoRef.current.currentTime = val;
+    }
+  };
+
   const cardClass = "bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-2xl p-6 mb-6 shadow-sm transition-all duration-300";
-  const btnClass = "inline-flex items-center gap-2 px-5 py-2.5 rounded-xl font-semibold text-sm cursor-pointer transition-all duration-200 hover:-translate-y-0.5 shadow-sm disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:translate-y-0";
+  const btnClass = "inline-flex items-center justify-center gap-2 px-6 py-3 rounded-xl font-bold text-sm cursor-pointer transition-all duration-200 hover:-translate-y-0.5 shadow-md disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:translate-y-0";
   const inputNumClass = "w-16 px-2 py-1 text-sm border border-slate-300 dark:border-slate-600 rounded-md bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500";
 
   return (
     <div className="max-w-5xl mx-auto p-6 md:p-10">
       
-      {/* 헤더 영역 */}
       <header className="flex justify-between items-center mb-10 pb-5 border-b-2 border-slate-200 dark:border-slate-700">
         <h1 className="text-3xl font-extrabold tracking-tight bg-gradient-to-r from-blue-600 to-cyan-500 bg-clip-text text-transparent">
           🎵 Sheet Music Extractor
         </h1>
         <div className="flex gap-3">
           <button 
-            className={`${btnClass} bg-slate-500 hover:bg-slate-600 text-white shadow-slate-500/30`} 
+            className="px-4 py-2 rounded-lg font-semibold text-sm cursor-pointer transition-all duration-200 bg-slate-100 hover:bg-slate-200 text-slate-700 dark:bg-slate-700 dark:hover:bg-slate-600 dark:text-slate-200"
             onClick={handleReset}
           >
-            🔄 Reset view
+            🔄 Reset
           </button>
           <button 
             onClick={() => setIsDarkMode(!isDarkMode)} 
-            className="w-12 h-12 flex items-center justify-center rounded-full bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 transition-colors text-xl"
+            className="w-10 h-10 flex items-center justify-center rounded-full bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 transition-colors text-lg"
             title="Toggle theme"
           >
             {isDarkMode ? '☀️' : '🌙'}
-            </button>
+          </button>
         </div>
       </header>
       
-      {/* 테스트 업로드 영역
-      <div className={`${cardClass} bg-slate-100/50 dark:bg-slate-800/50 flex flex-col md:flex-row justify-between items-center gap-4`}>
-        <div>
-          <h3 className="text-lg font-bold mb-2 flex items-center gap-2 text-slate-800 dark:text-slate-100">
-            🛠️ Quick test
-          </h3>
-          <p className="text-sm text-slate-500 dark:text-slate-400">Upload a new video or reset the view.</p>
-        </div>
-        <div className="flex gap-3">
-          <button 
-            className={`${btnClass} bg-slate-500 hover:bg-slate-600 text-white shadow-slate-500/30`} 
-            onClick={handleReset}
-          >
-            🔄 Reset view
-          </button>
-          <button 
-            className={`${btnClass} bg-blue-600 hover:bg-blue-700 text-white shadow-blue-500/30`} 
-            onClick={handleAutoTestUpload} 
-            disabled={videoInfo?.status === 'processing'}
-          >
-            🚀 Run test upload
-          </button>
-        </div>
-      </div>
-      */}
-      
-      {/* 🌟 파일 업로드 및 ROI 선택 UI 영역 */}
       <div className={cardClass}>
-        <h3 className="text-lg font-bold mb-4">📁 1. Select video and crop region</h3>
-        {/* <input type="file" accept="video/*" onChange={handleManualUpload} className="mb-4 block w-full text-sm..." /> */}
+        <h3 className="text-lg font-bold mb-4">📁 1. Select video and extraction settings</h3>
         <input 
           type="file" 
           accept="video/*" 
@@ -510,51 +421,56 @@ function App() {
         />
         
         {videoPreviewUrl && (
-          <div className="mt-4">
-              <div className="flex items-center justify-between mb-2 gap-3">
-                <p className="text-sm text-slate-500 m-0">💡 Drag over the video to select the score area. If you skip this, the entire frame will be processed.</p>
-              </div>
+          <div className="mt-6 flex flex-col items-center">
+            <div className="w-full flex items-center justify-between mb-2">
+              <p className="text-sm text-slate-500 dark:text-slate-400 font-medium flex items-center gap-2">
+                <span className="text-lg">💡</span> Drag over the video to select the score area.
+              </p>
+            </div>
             
-            {/* 드래그 영역 컨테이너 */}
+            {/* 비디오 및 드래그 영역 컨테이너 */}
             <div 
-              className={`relative inline-block border-2 border-slate-300 rounded overflow-hidden ${isDrawMode ? 'cursor-crosshair select-none' : ''}`}
+              className={`relative w-full max-w-4xl border-2 border-slate-300 dark:border-slate-600 rounded-xl bg-black overflow-hidden shadow-inner ${isDrawMode ? 'cursor-crosshair select-none' : ''}`}
               onMouseDown={handleMouseDown}
               onMouseMove={handleMouseMove}
               onMouseUp={handleMouseUp}
               onMouseLeave={handleMouseUp}
             >
-              {/* TOP-RIGHT: small toggle switch + tooltip + clear button */}
-              <div className="absolute top-2 right-2 z-20 flex flex-col items-end gap-2">
+              <div className="absolute top-3 right-3 z-20 flex flex-col items-end gap-2">
                 <div className="relative group">
                   <button
                     onClick={(e) => { e.stopPropagation(); handleToggleDrawMode(); }}
-                    aria-pressed={isDrawMode}
-                    className={`w-10 h-6 rounded-full transition-colors ${isDrawMode ? 'bg-amber-500' : 'bg-slate-200 dark:bg-slate-700'}`}
+                    className={`w-12 h-6 rounded-full transition-colors flex items-center px-1 ${isDrawMode ? 'bg-amber-500' : 'bg-slate-500/50 backdrop-blur-sm'}`}
                     title={isDrawMode ? 'Draw ROI: ON' : 'Draw ROI: OFF'}
                   >
-                    <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transform transition-transform ${isDrawMode ? 'translate-x-4' : 'translate-x-0'}`} />
+                    <span className={`w-4 h-4 bg-white rounded-full shadow transform transition-transform ${isDrawMode ? 'translate-x-6' : 'translate-x-0'}`} />
                   </button>
-                  <div className="absolute -top-8 right-0 opacity-0 group-hover:opacity-100 pointer-events-none bg-slate-800 text-white text-xs rounded py-1 px-2 whitespace-nowrap transition-opacity">
+                  <div className="absolute -top-10 right-0 opacity-0 group-hover:opacity-100 pointer-events-none bg-slate-800 text-white text-xs rounded py-1.5 px-3 whitespace-nowrap transition-opacity shadow-lg">
                     {isDrawMode ? 'Draw ROI: ON — drag to select an area' : 'Draw ROI: OFF — video controls enabled'}
                   </div>
                 </div>
                 {cropRect && (
                   <button
                     onClick={(e) => { e.stopPropagation(); setCropRect(null); maybeDrawingRef.current = false; setIsDrawing(false); }}
-                    className="text-xs bg-white dark:bg-slate-700 px-2 py-1 rounded border shadow"
-                    title="Clear selected ROI"
+                    className="text-xs font-bold bg-white/90 hover:bg-white text-slate-800 px-3 py-1.5 rounded-md shadow backdrop-blur-sm transition-colors"
                   >
                     ✖ Clear ROI
                   </button>
                 )}
               </div>
 
-              <video ref={videoRef} src={videoPreviewUrl} className={`max-h-[500px] w-auto ${isDrawMode ? 'pointer-events-none' : 'pointer-events-auto'}`} controls={true} muted />
+              <video 
+                ref={videoRef} 
+                src={videoPreviewUrl} 
+                onLoadedMetadata={handleVideoLoadedMetadata}
+                className={`w-full max-h-[600px] object-contain ${isDrawMode ? 'pointer-events-none' : 'pointer-events-auto'}`} 
+                controls={!isDrawMode} 
+                muted 
+              />
               
-              {/* 그려진 캡처 영역 표시 */}
               {cropRect && (
                 <div 
-                  className="absolute border-2 border-blue-500 bg-blue-500/20"
+                  className="absolute border-2 border-blue-500 bg-blue-500/20 pointer-events-none"
                   style={{
                     left: `${cropRect.x * 100}%`,
                     top: `${cropRect.y * 100}%`,
@@ -565,9 +481,48 @@ function App() {
               )}
             </div>
 
+            {/* 🌟 시간 구간 선택 (Dual Range Slider) */}
+            {videoDuration > 0 && (
+              <div className="w-full max-w-4xl mt-6 p-5 bg-slate-50 dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700">
+                <div className="flex justify-between items-center mb-3">
+                  <h4 className="text-sm font-bold text-slate-700 dark:text-slate-300">⏱️ Select Extraction Time Range</h4>
+                  <div className="font-mono text-sm font-semibold bg-blue-100 text-blue-800 dark:bg-blue-900/50 dark:text-blue-300 px-3 py-1 rounded-md">
+                    {formatDurationStr(startTime)} <span className="text-slate-400 mx-1">~</span> {formatDurationStr(endTime)}
+                  </div>
+                </div>
+                
+                <div className="relative h-6 flex items-center">
+                  <div className="absolute w-full h-2 bg-slate-200 dark:bg-slate-700 rounded-full pointer-events-none"></div>
+                  
+                  {/* 선택된 구간 하이라이트 (파란 선) */}
+                  <div 
+                    className="absolute h-2 bg-blue-500 rounded-full pointer-events-none"
+                    style={{ 
+                      left: `${(startTime / videoDuration) * 100}%`, 
+                      right: `${100 - (endTime / videoDuration) * 100}%` 
+                    }}
+                  ></div>
+
+                  {/* 투명한 듀얼 슬라이더 (CSS 이벤트 투과 로직 적용) */}
+                  <input 
+                    type="range" min="0" max={videoDuration} step="0.1" 
+                    value={startTime} onChange={handleStartTimeChange}
+                    className="absolute w-full appearance-none bg-transparent pointer-events-none z-10 [&::-webkit-slider-thumb]:pointer-events-auto [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-blue-500 [&::-webkit-slider-thumb]:shadow-md [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:pointer-events-auto"
+                  />
+                  <input 
+                    type="range" min="0" max={videoDuration} step="0.1" 
+                    value={endTime} onChange={handleEndTimeChange}
+                    className="absolute w-full appearance-none bg-transparent pointer-events-none z-20 [&::-webkit-slider-thumb]:pointer-events-auto [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-blue-500 [&::-webkit-slider-thumb]:shadow-md [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:pointer-events-auto"
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* 🌟 캡처/추출 버튼 (하단으로 이동) */}
             <button 
               onClick={executeUpload}
-              className={`${btnClass} bg-blue-600 text-white mt-4 block w-full md:w-auto`}
+              disabled={videoInfo?.status === 'processing'}
+              className={`${btnClass} bg-blue-600 hover:bg-blue-700 text-white mt-8 w-full max-w-md shadow-blue-500/30 text-lg`}
             >
               🚀 Start extraction
             </button>
@@ -575,19 +530,10 @@ function App() {
         )}
       </div>
 
-      {/* 파일 업로드 및 상태 표시 */}
       <div className={`${cardClass} ${videoInfo?.status === 'processing' ? 'ring-2 ring-blue-500 shadow-lg shadow-blue-500/10' : ''}`}>
         <h3 className="text-lg font-bold mb-4 text-slate-800 dark:text-slate-100">📁 Processing status</h3>
         
-        {/* <input 
-          type="file" 
-          accept="video/*" 
-          onChange={handleManualUpload} 
-          disabled={videoInfo?.status === 'processing'}
-          className="block w-full text-sm text-slate-500 dark:text-slate-400 file:mr-4 file:py-2.5 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 dark:file:bg-slate-700 dark:file:text-blue-400 dark:hover:file:bg-slate-600 transition-all cursor-pointer border border-dashed border-slate-300 dark:border-slate-600 rounded-xl p-4 bg-slate-50 dark:bg-slate-800/50"
-        /> */}
-        
-        <div className="mt-6 p-5 bg-blue-50/50 dark:bg-slate-900/50 rounded-xl border border-blue-100 dark:border-slate-700">
+        <div className="p-5 bg-blue-50/50 dark:bg-slate-900/50 rounded-xl border border-blue-100 dark:border-slate-700">
           <strong className="text-blue-600 dark:text-blue-400 text-lg block mb-2">{status}</strong>
           
           {videoInfo?.status === 'processing' && (
@@ -603,7 +549,6 @@ function App() {
         </div>
       </div>
 
-      {/* 비디오 메타데이터 */}
       {videoInfo && videoInfo.width && (
         <div className={cardClass}>
           <h3 className="text-lg font-bold mb-4 text-slate-800 dark:text-slate-100">📊 Video metadata</h3>
@@ -622,17 +567,14 @@ function App() {
             </div>
             <div className="p-4 bg-slate-50 dark:bg-slate-900 rounded-xl">
               <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider block mb-1">Duration</span>
-              <span className="font-medium text-slate-800 dark:text-slate-200 block">{formatDuration(videoInfo.duration)}</span>
+              <span className="font-medium text-slate-800 dark:text-slate-200 block">{formatDurationInfo(videoInfo.duration)}</span>
             </div>
           </div>
         </div>
       )}
 
-      {/* 갤러리 및 PDF 내보내기 영역 */}
       {videoInfo?.status === 'completed' && videoInfo?.keyframes && (
         <div className={cardClass}>
-          
-          {/* PDF 내보내기 설정 패널 */}
           <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/30 rounded-xl p-5 mb-8">
             <h4 className="text-md font-bold mb-4 text-amber-900 dark:text-amber-400">📄 PDF export settings</h4>
             <div className="flex flex-wrap items-center gap-4 text-sm text-slate-700 dark:text-slate-300">
@@ -651,7 +593,6 @@ function App() {
             </div>
           </div>
 
-          {/* Info: only checked images will be included in the PDF */}
           <div className="mb-6 p-4 rounded-lg bg-white/70 dark:bg-slate-800/60 border border-slate-100 dark:border-slate-700 flex items-center gap-3">
             <div className="flex-shrink-0 text-2xl">📝</div>
             <div className="text-sm text-slate-700 dark:text-slate-300">
@@ -670,7 +611,6 @@ function App() {
             </label>
           </div>
 
-          {/* 반응형 갤러리 그리드 */}
           <div className="grid gap-6" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${thumbSize}px, 1fr))` }}>
             {videoInfo.keyframes.map((frame, index) => {
               const imageUrl = `${STATIC_BASE_URL}/${frame.image_filepath.replace('./', '')}`;
@@ -681,26 +621,25 @@ function App() {
                   onClick={() => setSelectedImage(imageUrl)}
                 >
                   <div className="relative">
-                    {/* 체크박스 오버레이 */}
                     <div className="absolute top-2 left-2 z-10">
-                      <label className="flex items-center gap-2 bg-white/70 dark:bg-slate-900/70 p-1 rounded">
+                      <label className="flex items-center gap-2 bg-white/80 dark:bg-slate-900/80 p-1.5 rounded-md shadow-sm">
                         <input
                           type="checkbox"
                           checked={checkedFrames.has(index)}
                           onChange={() => toggleFrameChecked(index)}
                           onClick={(e) => e.stopPropagation()}
-                          className="w-4 h-4"
+                          className="w-4 h-4 cursor-pointer"
                         />
                       </label>
                     </div>
 
-                    <div className="aspect-video overflow-hidden bg-slate-100 dark:bg-slate-900">
-                      <img src={imageUrl} alt={`Frame ${index + 1}`} loading="lazy" className="w-full h-full object-contain group-hover:scale-105 transition-transform duration-500" />
+                    <div className="aspect-video overflow-hidden bg-slate-100 dark:bg-slate-900 flex items-center justify-center">
+                      <img src={imageUrl} alt={`Frame ${index + 1}`} loading="lazy" className="max-w-full max-h-full object-contain group-hover:scale-105 transition-transform duration-500" />
                     </div>
                   </div>
-                  <div className="p-3 text-center bg-slate-50 dark:bg-slate-800/80 border-t border-slate-200 dark:border-slate-700">
-                    <span className="text-xs text-slate-500 dark:text-slate-400 font-medium">#{index + 1}</span>
-                    <strong className="block text-slate-800 dark:text-slate-200 text-sm mt-0.5">{frame.timestamp.toFixed(2)}s</strong>
+                  <div className="p-3 flex justify-between items-center bg-slate-50 dark:bg-slate-800/80 border-t border-slate-200 dark:border-slate-700">
+                    <span className="text-xs text-slate-500 dark:text-slate-400 font-medium font-mono">#{index + 1}</span>
+                    <strong className="text-slate-800 dark:text-slate-200 text-sm font-mono bg-slate-200 dark:bg-slate-700 px-2 py-0.5 rounded">{formatDurationStr(frame.timestamp)}</strong>
                   </div>
                 </div>
               )
@@ -709,16 +648,15 @@ function App() {
         </div>
       )}
 
-      {/* 이미지 크게 보기 모달 */}
       {selectedImage && (
         <div 
-          className="fixed inset-0 bg-slate-900/90 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in duration-200"
+          className="fixed inset-0 bg-slate-900/95 backdrop-blur-md z-50 flex items-center justify-center p-4 animate-in fade-in duration-200"
           onClick={() => setSelectedImage(null)}
         >
-          <div className="relative max-w-[95vw] max-h-[95vh]">
+          <div className="relative max-w-[95vw] max-h-[95vh] flex items-center justify-center">
             <button 
               onClick={() => setSelectedImage(null)} 
-              className="absolute -top-12 right-0 text-white hover:text-slate-300 text-4xl transition-colors"
+              className="absolute -top-12 right-0 text-white/70 hover:text-white text-4xl transition-colors"
             >
               &times;
             </button>
