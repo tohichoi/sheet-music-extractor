@@ -13,8 +13,16 @@ function App() {
   
   const [status, setStatus] = useState('Idle');
   const [videoInfo, setVideoInfo] = useState(null);
-  const [selectedImage, setSelectedImage] = useState(null); 
+  const [selectedImageIndex, setSelectedImageIndex] = useState(null);
+  const [displayedImageIndex, setDisplayedImageIndex] = useState(null);
+  const [imgVisible, setImgVisible] = useState(true);
+  const [slideDir, setSlideDir] = useState(1);
+  const imgTimeoutRef = useRef(null);
+  const IMAGE_TRANS_MS = 220;
   const [thumbSize, setThumbSize] = useState(() => getSavedNumber('thumbSize', 250));
+  const [isWide, setIsWide] = useState(() => {
+    try { return localStorage.getItem('isWide') === 'true'; } catch { return false; }
+  });
   
   const [marginTop, setMarginTop] = useState(() => getSavedNumber('marginTop', 50));
   const [marginBottom, setMarginBottom] = useState(() => getSavedNumber('marginBottom', 50));
@@ -31,11 +39,18 @@ function App() {
   const [endTime, setEndTime] = useState(0);
   
   const [isDrawing, setIsDrawing] = useState(false);
-  const [startPos, setStartPos] = useState({ x: 0, y: 0 });
+  // startPos removed: overlay updates happen via refs/RAF to avoid frequent React renders
   const [cropRect, setCropRect] = useState(null); 
   const videoRef = useRef(null);
   const maybeDrawingRef = useRef(false);
   const startClientRef = useRef({ x: 0, y: 0 });
+  const overlayRef = useRef(null);
+  const rafRef = useRef(null);
+  const gridRef = useRef(null);
+  const actionRef = useRef(''); // 'draw' | 'move' | ''
+  const origCropRef = useRef(null); // { left, top, width, height } in px
+  const cropDivRef = useRef(null);
+  const resizeDirRef = useRef(null);
 
   const [checkedFrames, setCheckedFrames] = useState(() => new Set());
   const [isDrawMode, setIsDrawMode] = useState(() => {
@@ -46,21 +61,55 @@ function App() {
     }
   });
 
+  // Snap-to-grid / snap-to-edges settings
+  const [snapToGrid, setSnapToGrid] = useState(() => {
+    try { return localStorage.getItem('snapToGrid') === 'true'; } catch { return true; }
+  });
+  const [snapToEdges, setSnapToEdges] = useState(() => {
+    try { return localStorage.getItem('snapToEdges') === 'true'; } catch { return true; }
+  });
+  const [snapSize, setSnapSize] = useState(() => {
+    try { return Number(localStorage.getItem('snapSize')) || 8; } catch { return 8; }
+  });
+
+  useEffect(() => { try { localStorage.setItem('snapToGrid', snapToGrid ? 'true' : 'false'); } catch {} }, [snapToGrid]);
+  useEffect(() => { try { localStorage.setItem('snapToEdges', snapToEdges ? 'true' : 'false'); } catch {} }, [snapToEdges]);
+  useEffect(() => { try { localStorage.setItem('snapSize', String(snapSize)); } catch {} }, [snapSize]);
+  useEffect(() => {
+    const g = gridRef.current;
+    if (!g) return;
+    g.style.display = snapToGrid ? 'block' : 'none';
+    const size = Number(snapSize) || 8;
+    g.style.backgroundImage = `linear-gradient(to right, rgba(255,255,255,0.06) 1px, transparent 1px), linear-gradient(to bottom, rgba(255,255,255,0.06) 1px, transparent 1px)`;
+    g.style.backgroundSize = `${size}px ${size}px`;
+  }, [snapToGrid, snapSize]);
+
   const API_BASE_URL = 'http://localhost:8000/api/videos';
   const STATIC_BASE_URL = 'http://localhost:8000';
 
   const parseFilenameFromContentDisposition = (cd) => {
     if (!cd) return null;
-    const filenameStar = /filename\*=(?:UTF-8'')?([^;\n]+)/i.exec(cd);
-    if (filenameStar) {
+    // Try RFC 5987 style first: filename*=utf-8''encoded-filename
+    const filenameStar = /filename\*=(?:UTF-8''|utf-8''|UTF8'')?([^;\n]+)/i.exec(cd);
+    if (filenameStar && filenameStar[1]) {
+      const raw = filenameStar[1].trim().replace(/^"|"$/g, '');
       try {
-        return decodeURIComponent(filenameStar[1].trim().replace(/^"|"$/g, ''));
+        // Some servers percent-encode per RFC5987
+        return decodeURIComponent(raw);
       } catch (e) {
-        return filenameStar[1].trim().replace(/^"|"$/g, '');
+        // Fallback: replace + with space and return raw
+        return raw.replace(/\+/g, ' ');
       }
     }
+
+    // Fallback to legacy filename="..." or filename=...
     const filenameMatch = /filename=(?:"([^"]+)"|([^;\n]+))/i.exec(cd);
-    if (filenameMatch) return (filenameMatch[1] || filenameMatch[2]).trim();
+    if (filenameMatch) {
+      const raw = (filenameMatch[1] || filenameMatch[2]).trim();
+      // decode percent-encoding if present
+      try { return decodeURIComponent(raw); } catch (e) { return raw.replace(/\+/g, ' '); }
+    }
+
     return null;
   };
 
@@ -93,8 +142,18 @@ function App() {
 
   const ensurePdfExtension = (name) => {
     if (!name) return 'sheet_music.pdf';
-    if (!/\.pdf$/i.test(name)) return name + '.pdf';
-    return name;
+    // If the name already ends with .pdf, normalize it by removing any
+    // video extension that may appear immediately before .pdf
+    if (/\.pdf$/i.test(name)) {
+      // e.g. "file.webm.pdf" -> "file.pdf"
+      name = name.replace(/\.(webm|mp4|mov|mkv|avi|flv|wmv|ogg)(?=\.pdf$)/i, '');
+      return name;
+    }
+
+    // For names that don't end with .pdf, strip a trailing video extension
+    // (if present) and then append .pdf
+    name = name.replace(/\.(webm|mp4|mov|mkv|avi|flv|wmv|ogg)$/i, '');
+    return name + '.pdf';
   };
 
   const getSafeFilename = (rawName) => {
@@ -111,6 +170,8 @@ function App() {
     document.body.classList.toggle('dark', isDarkMode);
     localStorage.setItem('theme', isDarkMode ? 'dark' : 'light');
   }, [isDarkMode]);
+
+  useEffect(() => { try { localStorage.setItem('isWide', isWide ? 'true' : 'false'); } catch {} }, [isWide]);
 
   useEffect(() => {
     const savedVideoId = localStorage.getItem('lastVideoId');
@@ -177,9 +238,68 @@ function App() {
   useEffect(() => {
     if (videoInfo && Array.isArray(videoInfo.keyframes)) {
       const all = new Set(videoInfo.keyframes.map((_, i) => i));
-      setCheckedFrames(all);
-    } else setCheckedFrames(new Set());
+      setCheckedFrames((prev) => {
+        if (prev && prev.size === all.size) return prev;
+        return all;
+      });
+    } else {
+      setCheckedFrames((prev) => (prev && prev.size === 0 ? prev : new Set()));
+    }
   }, [videoInfo?.keyframes?.length]);
+
+  // Keyboard navigation for selected image modal
+  useEffect(() => {
+    const handleKey = (ev) => {
+      if (selectedImageIndex === null) return;
+      if (!videoInfo || !videoInfo.keyframes) return;
+      const total = videoInfo.keyframes.length;
+      if (ev.key === 'ArrowLeft') {
+        setSelectedImageIndex((i) => (i === null ? 0 : (i - 1 + total) % total));
+      } else if (ev.key === 'ArrowRight') {
+        setSelectedImageIndex((i) => (i === null ? 0 : (i + 1) % total));
+      } else if (ev.key === 'Home') {
+        setSelectedImageIndex(0);
+      } else if (ev.key === 'End') {
+        setSelectedImageIndex(total - 1);
+      } else if (ev.key === 'Escape') {
+        setSelectedImageIndex(null);
+      }
+    };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [selectedImageIndex, videoInfo]);
+
+  // Orchestrate fade/slide transitions when selectedImageIndex changes
+  useEffect(() => {
+    if (imgTimeoutRef.current) {
+      clearTimeout(imgTimeoutRef.current);
+      imgTimeoutRef.current = null;
+    }
+    // opening modal for first time
+    if (selectedImageIndex === null) {
+      setDisplayedImageIndex(null);
+      setImgVisible(true);
+      return;
+    }
+    if (displayedImageIndex === null) {
+      // first show without animation
+      setDisplayedImageIndex(selectedImageIndex);
+      setImgVisible(true);
+      return;
+    }
+    // determine slide direction for subtle slide effect
+    try {
+      setSlideDir(selectedImageIndex > displayedImageIndex ? 1 : -1);
+    } catch {}
+    // fade out, swap, fade in
+    setImgVisible(false);
+    imgTimeoutRef.current = setTimeout(() => {
+      setDisplayedImageIndex(selectedImageIndex);
+      setImgVisible(true);
+      imgTimeoutRef.current = null;
+    }, IMAGE_TRANS_MS);
+    return () => { if (imgTimeoutRef.current) { clearTimeout(imgTimeoutRef.current); imgTimeoutRef.current = null; } };
+  }, [selectedImageIndex, displayedImageIndex]);
   
   // 🌟 비디오 로드 시 전체 길이 설정
   const handleVideoLoadedMetadata = () => {
@@ -242,46 +362,430 @@ function App() {
     }
   };
 
-  const handleMouseDown = (e) => {
-    const rect = videoRef.current.getBoundingClientRect();
-    const x = (e.clientX - rect.left) / rect.width;
-    const y = (e.clientY - rect.top) / rect.height;
+  // Pointer-based handlers + RAF-updated overlay to avoid frequent React renders
+  const handlePointerDown = (e) => {
     if (!isDrawMode) return;
+    const videoEl = videoRef.current;
+    if (!videoEl) return;
+    // Use the container (event currentTarget) rect so overlay coordinates match container
+    const rect = e.currentTarget.getBoundingClientRect();
+    const localX = e.clientX - rect.left;
+    const localY = e.clientY - rect.top;
+
+    // If an ROI exists and the pointer is inside it, start move mode
+    if (cropRect && cropRect.width > 0 && cropRect.height > 0) {
+      const cropLeft = cropRect.x * rect.width;
+      const cropTop = cropRect.y * rect.height;
+      const cropW = cropRect.width * rect.width;
+      const cropH = cropRect.height * rect.height;
+      if (localX >= cropLeft && localX <= cropLeft + cropW && localY >= cropTop && localY <= cropTop + cropH) {
+        actionRef.current = 'move';
+        maybeDrawingRef.current = true;
+        setIsDrawing(false);
+        startClientRef.current = { x: e.clientX, y: e.clientY, rect };
+        origCropRef.current = { left: cropLeft, top: cropTop, width: cropW, height: cropH };
+        e.target?.setPointerCapture?.(e.pointerId);
+        const ov = overlayRef.current;
+        if (ov) {
+          ov.style.display = 'block';
+          ov.style.left = `0px`;
+          ov.style.top = `0px`;
+          ov.style.transform = `translate3d(${cropLeft}px, ${cropTop}px, 0)`;
+          ov.style.width = `${cropW}px`;
+          ov.style.height = `${cropH}px`;
+        }
+        return;
+      }
+    }
+
+    // otherwise start a new draw
+    actionRef.current = 'draw';
     maybeDrawingRef.current = true;
-    startClientRef.current = { x: e.clientX, y: e.clientY };
-    setStartPos({ x, y });
+    setIsDrawing(false);
+    startClientRef.current = { x: e.clientX, y: e.clientY, rect };
+    e.target?.setPointerCapture?.(e.pointerId);
+    // ensure overlay exists
+    const ov = overlayRef.current;
+    if (ov) {
+      ov.style.display = 'block';
+      // reset left/top and use transform-only positioning (transform will place overlay)
+      ov.style.left = `0px`;
+      ov.style.top = `0px`;
+      ov.style.transform = `translate3d(${e.clientX - rect.left}px, ${e.clientY - rect.top}px, 0)`;
+      ov.style.width = `0px`;
+      ov.style.height = `0px`;
+    }
   };
 
-  const handleMouseMove = (e) => {
-    if (!maybeDrawingRef.current && !isDrawing) return;
+  const handleResizeStart = (e, dir) => {
+    // start resizing from a handle; prevent container from interpreting this as draw/move
+    e.stopPropagation();
+    if (!isDrawMode) return;
+    const container = cropDivRef.current?.parentElement;
+    if (!container) return;
+    const rect = container.getBoundingClientRect();
+    actionRef.current = 'resize';
+    resizeDirRef.current = dir;
+    maybeDrawingRef.current = true;
+    setIsDrawing(false);
+    startClientRef.current = { x: e.clientX, y: e.clientY, rect };
+    // store original crop geometry in px
+    if (cropRect) {
+      origCropRef.current = {
+        left: cropRect.x * rect.width,
+        top: cropRect.y * rect.height,
+        width: cropRect.width * rect.width,
+        height: cropRect.height * rect.height,
+      };
+    } else {
+      origCropRef.current = { left: 0, top: 0, width: 0, height: 0 };
+    }
+    e.target?.setPointerCapture?.(e.pointerId);
+    const ov = overlayRef.current;
+    if (ov && origCropRef.current) {
+      ov.style.display = 'block';
+      ov.style.left = `0px`;
+      ov.style.top = `0px`;
+      ov.style.transform = `translate3d(${origCropRef.current.left}px, ${origCropRef.current.top}px, 0)`;
+      ov.style.width = `${origCropRef.current.width}px`;
+      ov.style.height = `${origCropRef.current.height}px`;
+    }
+  };
 
-    const rect = videoRef.current.getBoundingClientRect();
+  const scheduleOverlayUpdate = (left, top, width, height) => {
+    if (rafRef.current) return;
+    rafRef.current = requestAnimationFrame(() => {
+      const ov = overlayRef.current;
+      if (ov) {
+        ov.style.transform = `translate3d(${left}px, ${top}px, 0)`;
+        ov.style.width = `${width}px`;
+        ov.style.height = `${height}px`;
+      }
+      rafRef.current = null;
+    });
+  };
+
+  const handlePointerMove = (e) => {
+    // Hover cursor: show 'grab' when pointer is over existing ROI, 'crosshair' when draw mode enabled
+    const container = e.currentTarget;
+    if (container) {
+      const containerRect = container.getBoundingClientRect();
+      if (cropRect && isDrawMode && actionRef.current !== 'move' && !maybeDrawingRef.current && !isDrawing) {
+        const localX = e.clientX - containerRect.left;
+        const localY = e.clientY - containerRect.top;
+        const cropLeft = cropRect.x * containerRect.width;
+        const cropTop = cropRect.y * containerRect.height;
+        const cropW = cropRect.width * containerRect.width;
+        const cropH = cropRect.height * containerRect.height;
+        const isOverCrop = (localX >= cropLeft && localX <= cropLeft + cropW && localY >= cropTop && localY <= cropTop + cropH);
+        if (isOverCrop) {
+          container.style.cursor = 'grab';
+          // show highlight and handle
+          if (cropDivRef.current) {
+            cropDivRef.current.style.boxShadow = '0 0 0 4px rgba(59,130,246,0.12)';
+            cropDivRef.current.style.borderColor = 'rgba(59,130,246,1)';
+          }
+            // show all resize handles
+            const handles = cropDivRef.current?.querySelectorAll('.resize-handle');
+            if (handles) handles.forEach(h => h.style.display = 'block');
+        } else {
+          container.style.cursor = 'crosshair';
+          if (cropDivRef.current) {
+            cropDivRef.current.style.boxShadow = '';
+            cropDivRef.current.style.borderColor = '';
+          }
+            const handles = cropDivRef.current?.querySelectorAll('.resize-handle');
+            if (handles) handles.forEach(h => h.style.display = 'none');
+        }
+      }
+    }
+
+    if (!maybeDrawingRef.current && !isDrawing) return;
+    const { rect } = startClientRef.current;
+    if (!rect) return;
+
     if (!isDrawing && maybeDrawingRef.current) {
       const dx = Math.abs(e.clientX - startClientRef.current.x);
       const dy = Math.abs(e.clientY - startClientRef.current.y);
-      const dragThreshold = 6; 
+      const dragThreshold = 6;
       if (dx < dragThreshold && dy < dragThreshold) return;
       setIsDrawing(true);
       maybeDrawingRef.current = false;
-      setCropRect({ x: startPos.x, y: startPos.y, width: 0, height: 0 });
+      if (e && e.currentTarget && e.currentTarget.style) e.currentTarget.style.cursor = 'grabbing';
     }
 
-    if (isDrawing) {
-      const currentX = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-      const currentY = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
+    // Move mode: translate existing ROI
+    if (actionRef.current === 'move' && origCropRef.current) {
+      const dx = e.clientX - startClientRef.current.x;
+      const dy = e.clientY - startClientRef.current.y;
+      const rectW = rect.width;
+      const rectH = rect.height;
+      let left = origCropRef.current.left + dx;
+      let top = origCropRef.current.top + dy;
+      const width = origCropRef.current.width;
+      const height = origCropRef.current.height;
 
-      setCropRect({
-        x: Math.min(startPos.x, currentX),
-        y: Math.min(startPos.y, currentY),
-        width: Math.abs(currentX - startPos.x),
-        height: Math.abs(currentY - startPos.y),
-      });
+      // clamp within container
+      left = Math.max(0, Math.min(rectW - width, left));
+      top = Math.max(0, Math.min(rectH - height, top));
+
+      // snapping for move (grid)
+      if (snapToGrid) {
+        const grid = Number(snapSize) || 8;
+        left = Math.round(left / grid) * grid;
+        top = Math.round(top / grid) * grid;
+      }
+      if (snapToEdges) {
+        const thresh = 8;
+        if (Math.abs(left - 0) <= thresh) left = 0;
+        if (Math.abs(top - 0) <= thresh) top = 0;
+        if (Math.abs(left + width - rectW) <= thresh) left = rectW - width;
+        if (Math.abs(top + height - rectH) <= thresh) top = rectH - height;
+      }
+
+      scheduleOverlayUpdate(left, top, width, height);
+      if (e && e.currentTarget && e.currentTarget.style) e.currentTarget.style.cursor = 'grabbing';
+      return;
+    }
+
+    // Resize mode: adjust ROI by dragging a handle
+    if (actionRef.current === 'resize' && origCropRef.current) {
+      const dir = resizeDirRef.current || 'se';
+      const dx = e.clientX - startClientRef.current.x;
+      const dy = e.clientY - startClientRef.current.y;
+      const rectW = startClientRef.current.rect.width;
+      const rectH = startClientRef.current.rect.height;
+      let left = origCropRef.current.left;
+      let top = origCropRef.current.top;
+      let width = origCropRef.current.width;
+      let height = origCropRef.current.height;
+      const minSize = 24;
+      // adjust based on handle direction
+      if (dir.includes('e')) {
+        width = Math.max(minSize, origCropRef.current.width + dx);
+      }
+      if (dir.includes('s')) {
+        height = Math.max(minSize, origCropRef.current.height + dy);
+      }
+      if (dir.includes('w')) {
+        width = Math.max(minSize, origCropRef.current.width - dx);
+        left = origCropRef.current.left + (origCropRef.current.width - width);
+      }
+      if (dir.includes('n')) {
+        height = Math.max(minSize, origCropRef.current.height - dy);
+        top = origCropRef.current.top + (origCropRef.current.height - height);
+      }
+
+      // clamp to bounds
+      left = Math.max(0, Math.min(rectW - width, left));
+      top = Math.max(0, Math.min(rectH - height, top));
+
+      // snapping
+      if (snapToGrid) {
+        const grid = Number(snapSize) || 8;
+        left = Math.round(left / grid) * grid;
+        top = Math.round(top / grid) * grid;
+        width = Math.round(width / grid) * grid;
+        height = Math.round(height / grid) * grid;
+      }
+      if (snapToEdges) {
+        const thresh = 8;
+        if (Math.abs(left - 0) <= thresh) left = 0;
+        if (Math.abs(top - 0) <= thresh) top = 0;
+        if (Math.abs(left + width - rectW) <= thresh) left = rectW - width;
+        if (Math.abs(top + height - rectH) <= thresh) top = rectH - height;
+      }
+
+      // set appropriate resize cursor
+      if (e && e.currentTarget && e.currentTarget.style) {
+        const cursorMap = { nw: 'nwse-resize', se: 'nwse-resize', ne: 'nesw-resize', sw: 'nesw-resize', n: 'ns-resize', s: 'ns-resize', e: 'ew-resize', w: 'ew-resize' };
+        e.currentTarget.style.cursor = cursorMap[dir] || 'nwse-resize';
+      }
+
+      scheduleOverlayUpdate(left, top, width, height);
+      return;
+    }
+
+    // Draw mode: resizing/creating new ROI
+    if (isDrawing) {
+      const x1 = Math.min(startClientRef.current.x, e.clientX);
+      const y1 = Math.min(startClientRef.current.y, e.clientY);
+      const x2 = Math.max(startClientRef.current.x, e.clientX);
+      const y2 = Math.max(startClientRef.current.y, e.clientY);
+
+      let left = Math.max(0, x1 - rect.left);
+      let top = Math.max(0, y1 - rect.top);
+      let width = Math.max(0, Math.min(rect.width, x2 - rect.left) - left);
+      let height = Math.max(0, Math.min(rect.height, y2 - rect.top) - top);
+
+      // Apply snapping if enabled
+      if (snapToGrid) {
+        const grid = Number(snapSize) || 8;
+        left = Math.round(left / grid) * grid;
+        top = Math.round(top / grid) * grid;
+        width = Math.round(width / grid) * grid;
+        height = Math.round(height / grid) * grid;
+        width = Math.min(width, rect.width - left);
+        height = Math.min(height, rect.height - top);
+      }
+      if (snapToEdges) {
+        const thresh = 8; // pixels
+        if (Math.abs(left - 0) <= thresh) left = 0;
+        if (Math.abs(top - 0) <= thresh) top = 0;
+        if (Math.abs((left + width) - rect.width) <= thresh) width = rect.width - left;
+        if (Math.abs((top + height) - rect.height) <= thresh) height = rect.height - top;
+        const thirds = [rect.width / 2, rect.width / 3, (rect.width * 2) / 3];
+        for (const t of thirds) {
+          if (Math.abs(left - t) <= thresh) { left = t; break; }
+          if (Math.abs(left + width - t) <= thresh) { width = t - left; break; }
+        }
+      }
+
+      scheduleOverlayUpdate(left, top, width, height);
+      if (e && e.currentTarget && e.currentTarget.style) e.currentTarget.style.cursor = 'grabbing';
     }
   };
 
-  const handleMouseUp = () => {
-    if (isDrawing) setIsDrawing(false);
+  const handlePointerUp = (e) => {
+    if (!maybeDrawingRef.current && !isDrawing) {
+      maybeDrawingRef.current = false;
+      actionRef.current = '';
+      return;
+    }
+    const rect = startClientRef.current.rect;
+    if (!rect) return;
+    if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
+
+    // If we were moving an existing ROI
+    if (actionRef.current === 'move' && origCropRef.current) {
+      // overlay currently reflects the moved position; read its computed transform/width/height
+      const ov = overlayRef.current;
+      let left = origCropRef.current.left + (e.clientX - startClientRef.current.x);
+      let top = origCropRef.current.top + (e.clientY - startClientRef.current.y);
+      const width = origCropRef.current.width;
+      const height = origCropRef.current.height;
+      left = Math.max(0, Math.min(rect.width - width, left));
+      top = Math.max(0, Math.min(rect.height - height, top));
+      // finalize snapping again
+      if (snapToGrid) {
+        const grid = Number(snapSize) || 8;
+        left = Math.round(left / grid) * grid;
+        top = Math.round(top / grid) * grid;
+      }
+      if (snapToEdges) {
+        const thresh = 8;
+        if (Math.abs(left - 0) <= thresh) left = 0;
+        if (Math.abs(top - 0) <= thresh) top = 0;
+        if (Math.abs(left + width - rect.width) <= thresh) left = rect.width - width;
+        if (Math.abs(top + height - rect.height) <= thresh) top = rect.height - height;
+      }
+      const norm = { x: left / rect.width, y: top / rect.height, width: width / rect.width, height: height / rect.height };
+      setCropRect(norm);
+      setIsDrawing(false);
+      maybeDrawingRef.current = false;
+      actionRef.current = '';
+      origCropRef.current = null;
+      if (ov) ov.style.display = 'none';
+      if (e && e.currentTarget && e.currentTarget.style) e.currentTarget.style.cursor = isDrawMode ? 'crosshair' : 'auto';
+      e.target?.releasePointerCapture?.(e.pointerId);
+      return;
+    }
+
+    // If we were resizing an existing ROI
+    if (actionRef.current === 'resize' && origCropRef.current) {
+      const rect = startClientRef.current.rect;
+      if (!rect) return;
+      let left = origCropRef.current.left;
+      let top = origCropRef.current.top;
+      let width = origCropRef.current.width;
+      let height = origCropRef.current.height;
+      const dir = resizeDirRef.current || 'se';
+      const dx = e.clientX - startClientRef.current.x;
+      const dy = e.clientY - startClientRef.current.y;
+      const minSize = 24;
+      if (dir.includes('e')) width = Math.max(minSize, origCropRef.current.width + dx);
+      if (dir.includes('s')) height = Math.max(minSize, origCropRef.current.height + dy);
+      if (dir.includes('w')) { width = Math.max(minSize, origCropRef.current.width - dx); left = origCropRef.current.left + (origCropRef.current.width - width); }
+      if (dir.includes('n')) { height = Math.max(minSize, origCropRef.current.height - dy); top = origCropRef.current.top + (origCropRef.current.height - height); }
+
+      left = Math.max(0, Math.min(rect.width - width, left));
+      top = Math.max(0, Math.min(rect.height - height, top));
+
+      if (snapToGrid) {
+        const grid = Number(snapSize) || 8;
+        left = Math.round(left / grid) * grid;
+        top = Math.round(top / grid) * grid;
+        width = Math.round(width / grid) * grid;
+        height = Math.round(height / grid) * grid;
+        width = Math.min(width, rect.width - left);
+        height = Math.min(height, rect.height - top);
+      }
+      if (snapToEdges) {
+        const thresh = 8;
+        if (Math.abs(left - 0) <= thresh) left = 0;
+        if (Math.abs(top - 0) <= thresh) top = 0;
+        if (Math.abs(left + width - rect.width) <= thresh) left = rect.width - width;
+        if (Math.abs(top + height - rect.height) <= thresh) top = rect.height - height;
+      }
+
+      const norm = { x: left / rect.width, y: top / rect.height, width: width / rect.width, height: height / rect.height };
+      setCropRect(norm);
+      setIsDrawing(false);
+      maybeDrawingRef.current = false;
+      actionRef.current = '';
+      origCropRef.current = null;
+      resizeDirRef.current = null;
+      const ov = overlayRef.current;
+      if (ov) ov.style.display = 'none';
+      if (e && e.currentTarget && e.currentTarget.style) e.currentTarget.style.cursor = isDrawMode ? 'crosshair' : 'auto';
+      e.target?.releasePointerCapture?.(e.pointerId);
+      return;
+    }
+
+    // otherwise treat as draw completion
+    const x1 = Math.min(startClientRef.current.x, e.clientX);
+    const y1 = Math.min(startClientRef.current.y, e.clientY);
+    const x2 = Math.max(startClientRef.current.x, e.clientX);
+    const y2 = Math.max(startClientRef.current.y, e.clientY);
+
+    let left = Math.max(0, Math.min(rect.width, x1 - rect.left));
+    let top = Math.max(0, Math.min(rect.height, y1 - rect.top));
+    let width = Math.max(0, Math.min(rect.width, x2 - rect.left) - left);
+    let height = Math.max(0, Math.min(rect.height, y2 - rect.top) - top);
+
+    if (snapToGrid) {
+      const grid = Number(snapSize) || 8;
+      left = Math.round(left / grid) * grid;
+      top = Math.round(top / grid) * grid;
+      width = Math.round(width / grid) * grid;
+      height = Math.round(height / grid) * grid;
+      width = Math.min(width, rect.width - left);
+      height = Math.min(height, rect.height - top);
+    }
+    if (snapToEdges) {
+      const thresh = 8;
+      if (Math.abs(left - 0) <= thresh) left = 0;
+      if (Math.abs(top - 0) <= thresh) top = 0;
+      if (Math.abs((left + width) - rect.width) <= thresh) width = rect.width - left;
+      if (Math.abs((top + height) - rect.height) <= thresh) height = rect.height - top;
+    }
+
+    const norm = {
+      x: left / rect.width,
+      y: top / rect.height,
+      width: width / rect.width,
+      height: height / rect.height,
+    };
+    setCropRect(norm);
+    setIsDrawing(false);
     maybeDrawingRef.current = false;
+    actionRef.current = '';
+    const ov = overlayRef.current;
+    if (ov) {
+      ov.style.display = 'none';
+    }
+    if (e && e.currentTarget && e.currentTarget.style) e.currentTarget.style.cursor = isDrawMode ? 'crosshair' : 'auto';
+    e.target?.releasePointerCapture?.(e.pointerId);
   };
 
   const executeUpload = async () => {
@@ -304,6 +808,8 @@ function App() {
 
       const cd = response.headers.get('content-disposition');
       const parsed = parseFilenameFromContentDisposition(cd);
+      // Debugging: log server header and chosen filenames to help diagnose incorrect names
+      console.debug('PDF download: content-disposition=', cd, 'parsed=', parsed, 'original_filename=', videoInfo?.original_filename);
       const fallback = videoInfo?.original_filename ? videoInfo.original_filename : `sheet_music_${videoInfo.id}.pdf`;
       const rawName = parsed || fallback;
       const safeName = getSafeFilename(rawName);
@@ -345,7 +851,7 @@ function App() {
   const handleToggleDrawMode = () => {
     setIsDrawMode(prev => {
       const next = !prev;
-      try { localStorage.setItem('drawMode', next ? 'true' : 'false'); } catch (e) {}
+      try { localStorage.setItem('drawMode', next ? 'true' : 'false'); } catch { /* ignore storage errors */ }
       if (!next) {
         maybeDrawingRef.current = false;
         setIsDrawing(false);
@@ -387,13 +893,30 @@ function App() {
   const inputNumClass = "w-16 px-2 py-1 text-sm border border-slate-300 dark:border-slate-600 rounded-md bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500";
 
   return (
-    <div className="max-w-5xl mx-auto p-6 md:p-10">
+    <div className={`${isWide ? 'max-w-full mx-2 p-3 md:p-4' : 'max-w-5xl mx-auto p-6 md:p-10'}`}>
       
       <header className="flex justify-between items-center mb-10 pb-5 border-b-2 border-slate-200 dark:border-slate-700">
         <h1 className="text-3xl font-extrabold tracking-tight bg-gradient-to-r from-blue-600 to-cyan-500 bg-clip-text text-transparent">
           🎵 Sheet Music Extractor
         </h1>
-        <div className="flex gap-3">
+        <div className="flex gap-3 items-center">
+          <div className="flex items-center rounded-md bg-slate-100 dark:bg-slate-800 p-1">
+            <button
+              onClick={(e) => { e.stopPropagation(); setIsWide(false); }}
+              className={`px-3 py-1 rounded-md text-sm font-medium transition ${!isWide ? 'bg-white text-slate-800' : 'text-slate-600 hover:bg-slate-200'}`}
+              title="Default layout"
+            >
+              Default
+            </button>
+            <button
+              onClick={(e) => { e.stopPropagation(); setIsWide(true); }}
+              className={`ml-1 px-3 py-1 rounded-md text-sm font-medium transition ${isWide ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-200'}`}
+              title="Wide layout (minimal margins)"
+            >
+              Wide
+            </button>
+          </div>
+
           <button 
             className="px-4 py-2 rounded-lg font-semibold text-sm cursor-pointer transition-all duration-200 bg-slate-100 hover:bg-slate-200 text-slate-700 dark:bg-slate-700 dark:hover:bg-slate-600 dark:text-slate-200"
             onClick={handleReset}
@@ -421,43 +944,117 @@ function App() {
         />
         
         {videoPreviewUrl && (
-          <div className="mt-6 flex flex-col items-center">
+            <div className="mt-6 flex flex-col items-center">
             <div className="w-full flex items-center justify-between mb-2">
               <p className="text-sm text-slate-500 dark:text-slate-400 font-medium flex items-center gap-2">
                 <span className="text-lg">💡</span> Drag over the video to select the score area.
               </p>
             </div>
-            
-            {/* 비디오 및 드래그 영역 컨테이너 */}
-            <div 
-              className={`relative w-full max-w-4xl border-2 border-slate-300 dark:border-slate-600 rounded-xl bg-black overflow-hidden shadow-inner ${isDrawMode ? 'cursor-crosshair select-none' : ''}`}
-              onMouseDown={handleMouseDown}
-              onMouseMove={handleMouseMove}
-              onMouseUp={handleMouseUp}
-              onMouseLeave={handleMouseUp}
-            >
-              <div className="absolute top-3 right-3 z-20 flex flex-col items-end gap-2">
-                <div className="relative group">
+            {/* 상단에 독립된 ROI 컨트롤 바 (비디오 밖) */}
+            <div className="w-full max-w-4xl mb-4 flex items-center justify-end">
+              <div className="flex items-center gap-4">
+                {/* Draw toggle with label */}
+                <div className="relative group flex items-center gap-2">
                   <button
                     onClick={(e) => { e.stopPropagation(); handleToggleDrawMode(); }}
                     className={`w-12 h-6 rounded-full transition-colors flex items-center px-1 ${isDrawMode ? 'bg-amber-500' : 'bg-slate-500/50 backdrop-blur-sm'}`}
+                    aria-pressed={isDrawMode}
                     title={isDrawMode ? 'Draw ROI: ON' : 'Draw ROI: OFF'}
                   >
                     <span className={`w-4 h-4 bg-white rounded-full shadow transform transition-transform ${isDrawMode ? 'translate-x-6' : 'translate-x-0'}`} />
                   </button>
-                  <div className="absolute -top-10 right-0 opacity-0 group-hover:opacity-100 pointer-events-none bg-slate-800 text-white text-xs rounded py-1.5 px-3 whitespace-nowrap transition-opacity shadow-lg">
-                    {isDrawMode ? 'Draw ROI: ON — drag to select an area' : 'Draw ROI: OFF — video controls enabled'}
+                  <div className="text-sm font-medium text-slate-800 dark:text-slate-100">Draw ROI</div>
+                  <div className="absolute -top-10 left-0 opacity-0 group-hover:opacity-100 pointer-events-none bg-slate-800 text-white text-xs rounded py-1.5 px-3 whitespace-nowrap transition-opacity shadow-lg">
+                    Toggle draw mode to enable rectangular ROI selection over the video.
                   </div>
                 </div>
-                {cropRect && (
+
+                {/* Clear button */}
+                <div className="relative group flex items-center gap-2">
                   <button
-                    onClick={(e) => { e.stopPropagation(); setCropRect(null); maybeDrawingRef.current = false; setIsDrawing(false); }}
-                    className="text-xs font-bold bg-white/90 hover:bg-white text-slate-800 px-3 py-1.5 rounded-md shadow backdrop-blur-sm transition-colors"
+                    onClick={(e) => { e.stopPropagation(); if (!isDrawMode) return; setCropRect(null); maybeDrawingRef.current = false; setIsDrawing(false); }}
+                    title="Clear ROI"
+                    disabled={!isDrawMode}
+                    className={`w-8 h-8 flex items-center justify-center rounded-md ${isDrawMode ? 'bg-red-50 hover:bg-red-100 text-red-700 border border-red-100' : 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed'}`}
+                    aria-disabled={!isDrawMode}
                   >
-                    ✖ Clear ROI
+                    ✖
                   </button>
-                )}
+                  <div className="text-sm text-slate-700 dark:text-slate-300">Clear ROI</div>
+                  <div className="absolute -top-10 left-0 opacity-0 group-hover:opacity-100 pointer-events-none bg-slate-800 text-white text-xs rounded py-1.5 px-3 whitespace-nowrap transition-opacity shadow-lg">
+                    Clear the current ROI selection.
+                  </div>
+                </div>
+
+                {/* Snap toggle */}
+                <div className={`relative group flex items-center gap-2 ${!isDrawMode ? 'opacity-50 pointer-events-none' : ''}`}>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input type="checkbox" checked={snapToGrid} onChange={(e) => setSnapToGrid(e.target.checked)} className="w-4 h-4" disabled={!isDrawMode} />
+                    <span className="text-xs text-slate-700 dark:text-slate-300">Snap</span>
+                  </label>
+                  <div className="absolute -top-10 left-0 opacity-0 group-hover:opacity-100 pointer-events-none bg-slate-800 text-white text-xs rounded py-1.5 px-3 whitespace-nowrap transition-opacity shadow-lg">
+                    Snap the ROI to the visible grid while dragging.
+                  </div>
+                </div>
+
+                {/* Grid size */}
+                <div className={`relative group ${!isDrawMode ? 'opacity-50 pointer-events-none' : ''}`}>
+                  <input type="number" min="2" max="200" value={snapSize} onChange={(e) => setSnapSize(Number(e.target.value) || 8)} className="w-14 text-xs p-1 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100" title="Grid size (px)" disabled={!isDrawMode} />
+                  <div className="absolute -top-10 left-0 opacity-0 group-hover:opacity-100 pointer-events-none bg-slate-800 text-white text-xs rounded py-1.5 px-3 whitespace-nowrap transition-opacity shadow-lg">
+                    Grid cell size (pixels) used when Snap is enabled.
+                  </div>
+                </div>
+
+                {/* Edges toggle */}
+                <div className={`relative group flex items-center gap-2 ${!isDrawMode ? 'opacity-50 pointer-events-none' : ''}`}>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input type="checkbox" checked={snapToEdges} onChange={(e) => setSnapToEdges(e.target.checked)} className="w-4 h-4" disabled={!isDrawMode} />
+                    <span className="text-xs text-slate-700 dark:text-slate-300">Edges</span>
+                  </label>
+                  <div className="absolute -top-10 left-0 opacity-0 group-hover:opacity-100 pointer-events-none bg-slate-800 text-white text-xs rounded py-1.5 px-3 whitespace-nowrap transition-opacity shadow-lg">
+                    Snap the ROI to container edges, centers, and thirds.
+                  </div>
+                </div>
               </div>
+            </div>
+
+              <div 
+                className={`relative w-full max-w-4xl border-2 border-slate-300 dark:border-slate-600 rounded-xl bg-black overflow-hidden shadow-inner ${isDrawMode ? 'cursor-crosshair select-none' : ''}`}
+                onPointerDown={handlePointerDown}
+                onPointerMove={handlePointerMove}
+                onPointerUp={handlePointerUp}
+                onPointerCancel={handlePointerUp}
+              >
+                <div
+                  ref={gridRef}
+                style={{
+                  position: 'absolute',
+                  left: 0,
+                  top: 0,
+                  right: 0,
+                  bottom: 0,
+                  display: snapToGrid ? 'block' : 'none',
+                  pointerEvents: 'none',
+                  zIndex: 15,
+                  opacity: 0.6,
+                }}
+              />
+
+              <div
+                ref={overlayRef}
+                style={{
+                  position: 'absolute',
+                  left: 0,
+                  top: 0,
+                  display: 'none',
+                  transform: 'translate3d(0px, 0px, 0)',
+                  border: '2px solid rgba(59,130,246,0.9)',
+                  background: 'rgba(59,130,246,0.16)',
+                  pointerEvents: 'none',
+                  zIndex: 25,
+                  willChange: 'transform, width, height'
+                }}
+              />
 
               <video 
                 ref={videoRef} 
@@ -470,14 +1067,26 @@ function App() {
               
               {cropRect && (
                 <div 
-                  className="absolute border-2 border-blue-500 bg-blue-500/20 pointer-events-none"
+                  ref={cropDivRef}
+                  className="absolute border-2 border-blue-500 bg-blue-500/20"
                   style={{
                     left: `${cropRect.x * 100}%`,
                     top: `${cropRect.y * 100}%`,
                     width: `${cropRect.width * 100}%`,
-                    height: `${cropRect.height * 100}%`
+                    height: `${cropRect.height * 100}%`,
+                    pointerEvents: 'auto'
                   }}
-                />
+                >
+                  {/* Resize handles (hidden by default, shown on hover) */}
+                  <div onPointerDown={(e)=>handleResizeStart(e,'nw')} className="resize-handle" style={{ position: 'absolute', left: -6, top: -6, width: 12, height: 12, background: '#fff', border: '2px solid rgba(37,99,235,0.9)', borderRadius: 2, display: 'none', zIndex: 50, cursor: 'nwse-resize' }} />
+                  <div onPointerDown={(e)=>handleResizeStart(e,'n')} className="resize-handle" style={{ position: 'absolute', left: '50%', top: -6, transform: 'translateX(-50%)', width: 12, height: 12, background: '#fff', border: '2px solid rgba(37,99,235,0.9)', borderRadius: 2, display: 'none', zIndex: 50, cursor: 'ns-resize' }} />
+                  <div onPointerDown={(e)=>handleResizeStart(e,'ne')} className="resize-handle" style={{ position: 'absolute', right: -6, top: -6, width: 12, height: 12, background: '#fff', border: '2px solid rgba(37,99,235,0.9)', borderRadius: 2, display: 'none', zIndex: 50, cursor: 'nesw-resize' }} />
+                  <div onPointerDown={(e)=>handleResizeStart(e,'e')} className="resize-handle" style={{ position: 'absolute', right: -6, top: '50%', transform: 'translateY(-50%)', width: 12, height: 12, background: '#fff', border: '2px solid rgba(37,99,235,0.9)', borderRadius: 2, display: 'none', zIndex: 50, cursor: 'ew-resize' }} />
+                  <div onPointerDown={(e)=>handleResizeStart(e,'se')} className="resize-handle" style={{ position: 'absolute', right: -6, bottom: -6, width: 12, height: 12, background: '#fff', border: '2px solid rgba(37,99,235,0.9)', borderRadius: 2, display: 'none', zIndex: 50, cursor: 'nwse-resize' }} />
+                  <div onPointerDown={(e)=>handleResizeStart(e,'s')} className="resize-handle" style={{ position: 'absolute', left: '50%', bottom: -6, transform: 'translateX(-50%)', width: 12, height: 12, background: '#fff', border: '2px solid rgba(37,99,235,0.9)', borderRadius: 2, display: 'none', zIndex: 50, cursor: 'ns-resize' }} />
+                  <div onPointerDown={(e)=>handleResizeStart(e,'sw')} className="resize-handle" style={{ position: 'absolute', left: -6, bottom: -6, width: 12, height: 12, background: '#fff', border: '2px solid rgba(37,99,235,0.9)', borderRadius: 2, display: 'none', zIndex: 50, cursor: 'nesw-resize' }} />
+                  <div onPointerDown={(e)=>handleResizeStart(e,'w')} className="resize-handle" style={{ position: 'absolute', left: -6, top: '50%', transform: 'translateY(-50%)', width: 12, height: 12, background: '#fff', border: '2px solid rgba(37,99,235,0.9)', borderRadius: 2, display: 'none', zIndex: 50, cursor: 'ew-resize' }} />
+                </div>
               )}
             </div>
 
@@ -552,22 +1161,27 @@ function App() {
       {videoInfo && videoInfo.width && (
         <div className={cardClass}>
           <h3 className="text-lg font-bold mb-4 text-slate-800 dark:text-slate-100">📊 Video metadata</h3>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <div className="p-4 bg-slate-50 dark:bg-slate-900 rounded-xl">
+          <div className="flex flex-col gap-4">
+            {/* First row: Filename spans full width and allows wrapping */}
+            <div className="p-4 bg-slate-50 dark:bg-slate-900 rounded-xl w-full">
               <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider block mb-1">Filename</span>
-              <span className="font-medium text-slate-800 dark:text-slate-200 truncate block">{videoInfo.original_filename}</span>
+              <div className="font-medium text-slate-800 dark:text-slate-200 break-words whitespace-normal">{videoInfo.original_filename}</div>
             </div>
-            <div className="p-4 bg-slate-50 dark:bg-slate-900 rounded-xl">
-              <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider block mb-1">File size</span>
-              <span className="font-medium text-slate-800 dark:text-slate-200 block">{formatSize(videoInfo.file_size)}</span>
-            </div>
-            <div className="p-4 bg-slate-50 dark:bg-slate-900 rounded-xl">
-              <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider block mb-1">Resolution</span>
-              <span className="font-medium text-slate-800 dark:text-slate-200 block">{videoInfo.width} x {videoInfo.height}</span>
-            </div>
-            <div className="p-4 bg-slate-50 dark:bg-slate-900 rounded-xl">
-              <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider block mb-1">Duration</span>
-              <span className="font-medium text-slate-800 dark:text-slate-200 block">{formatDurationInfo(videoInfo.duration)}</span>
+
+            {/* Second row: three equal columns for File size / Resolution / Duration */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="p-4 bg-slate-50 dark:bg-slate-900 rounded-xl">
+                <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider block mb-1">File size</span>
+                <span className="font-medium text-slate-800 dark:text-slate-200 block">{formatSize(videoInfo.file_size)}</span>
+              </div>
+              <div className="p-4 bg-slate-50 dark:bg-slate-900 rounded-xl">
+                <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider block mb-1">Resolution</span>
+                <span className="font-medium text-slate-800 dark:text-slate-200 block">{videoInfo.width} x {videoInfo.height}</span>
+              </div>
+              <div className="p-4 bg-slate-50 dark:bg-slate-900 rounded-xl">
+                <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider block mb-1">Duration</span>
+                <span className="font-medium text-slate-800 dark:text-slate-200 block">{formatDurationInfo(videoInfo.duration)}</span>
+              </div>
             </div>
           </div>
         </div>
@@ -618,7 +1232,7 @@ function App() {
                 <div 
                   key={frame.id} 
                   className="group bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl overflow-hidden cursor-pointer hover:-translate-y-1 hover:shadow-lg hover:border-blue-500 dark:hover:border-blue-400 transition-all duration-300"
-                  onClick={() => setSelectedImage(imageUrl)}
+                  onClick={() => setSelectedImageIndex(index)}
                 >
                   <div className="relative">
                     <div className="absolute top-2 left-2 z-10">
@@ -648,26 +1262,86 @@ function App() {
         </div>
       )}
 
-      {selectedImage && (
-        <div 
-          className="fixed inset-0 bg-slate-900/95 backdrop-blur-md z-50 flex items-center justify-center p-4 animate-in fade-in duration-200"
-          onClick={() => setSelectedImage(null)}
-        >
-          <div className="relative max-w-[95vw] max-h-[95vh] flex items-center justify-center">
-            <button 
-              onClick={() => setSelectedImage(null)} 
-              className="absolute -top-12 right-0 text-white/70 hover:text-white text-4xl transition-colors"
+      {selectedImageIndex !== null && videoInfo && videoInfo.keyframes && (
+        (() => {
+          const total = videoInfo.keyframes.length;
+          const displayed = (displayedImageIndex !== null) ? displayedImageIndex : selectedImageIndex;
+          if (displayed === null || displayed === undefined) return null;
+          const frame = videoInfo.keyframes[displayed];
+          const imgUrl = `${STATIC_BASE_URL}/${frame.image_filepath.replace('./', '')}`;
+          const idx = displayed;
+          return (
+            <div 
+              className="fixed inset-0 bg-slate-900/95 backdrop-blur-md z-50 flex items-center justify-center p-4 animate-in fade-in duration-200"
+              onClick={(e) => { if (e.target === e.currentTarget) { setSelectedImageIndex(null); setDisplayedImageIndex(null); } }}
+              tabIndex={-1}
             >
-              &times;
-            </button>
-            <img 
-              src={selectedImage} 
-              alt="Enlarged" 
-              className="max-w-full max-h-[90vh] object-contain rounded-xl shadow-2xl bg-white dark:bg-slate-900" 
-              onClick={(e) => e.stopPropagation()} 
-            />
-          </div>
-        </div>
+              <div className="relative max-w-[95vw] max-h-[95vh] flex items-center justify-center">
+                <button 
+                  onClick={(e) => { e.stopPropagation(); setSelectedImageIndex(null); setDisplayedImageIndex(null); }} 
+                  className="absolute -top-12 right-0 text-white text-2xl transition-colors bg-black/50 p-1.5 rounded-full hover:bg-black/60"
+                  style={{ zIndex: 70 }}
+                  aria-label="Close"
+                >
+                  ×
+                </button>
+
+                {/* Left click zone */}
+                <div
+                  onClick={(e) => { e.stopPropagation(); setSelectedImageIndex((cur) => (cur === null ? 0 : (cur - 1 + total) % total)); }}
+                  className="absolute left-0 top-0 h-full w-1/2"
+                  style={{ zIndex: 30 }}
+                  aria-hidden
+                />
+                {/* Right click zone */}
+                <div
+                  onClick={(e) => { e.stopPropagation(); setSelectedImageIndex((cur) => (cur === null ? 0 : (cur + 1) % total)); }}
+                  className="absolute right-0 top-0 h-full w-1/2"
+                  style={{ zIndex: 30 }}
+                  aria-hidden
+                />
+
+                {/* First / Prev controls (looping) */}
+                <div className="absolute left-4 top-1/2 transform -translate-y-1/2 flex flex-col gap-2" style={{ zIndex: 60 }}>
+                  <button onClick={(e) => { e.stopPropagation(); setSelectedImageIndex(0); }} className="bg-black/60 text-white px-4 py-3 rounded hover:bg-black/70 text-lg font-semibold">Start</button>
+                  <button onClick={(e) => { e.stopPropagation(); setSelectedImageIndex((cur) => (cur === null ? 0 : (cur - 1 + total) % total)); }} className="bg-black/60 text-white px-4 py-3 rounded hover:bg-black/70 text-lg font-semibold">◀ Prev</button>
+                </div>
+
+                {/* Next / Last controls (looping) */}
+                <div className="absolute right-4 top-1/2 transform -translate-y-1/2 flex flex-col gap-2" style={{ zIndex: 60 }}>
+                  <button onClick={(e) => { e.stopPropagation(); setSelectedImageIndex((cur) => (cur === null ? 0 : (cur + 1) % total)); }} className="bg-black/60 text-white px-4 py-3 rounded hover:bg-black/70 text-lg font-semibold">Next ▶</button>
+                  <button onClick={(e) => { e.stopPropagation(); setSelectedImageIndex(total - 1); }} className="bg-black/60 text-white px-4 py-3 rounded hover:bg-black/70 text-lg font-semibold">End</button>
+                </div>
+
+                <img 
+                  src={imgUrl} 
+                  alt={`Enlarged frame ${idx + 1}`} 
+                  style={{
+                    position: 'relative',
+                    zIndex: 40,
+                    opacity: imgVisible ? 1 : 0,
+                    transition: `opacity ${IMAGE_TRANS_MS}ms ease, transform ${IMAGE_TRANS_MS}ms ease`,
+                    transform: imgVisible ? 'translateX(0)' : `translateX(${ - (slideDir || 1) * 12 }px)`
+                  }}
+                  className="max-w-full max-h-[90vh] object-contain rounded-xl shadow-2xl bg-white dark:bg-slate-900"
+                  onClick={(e) => e.stopPropagation()} 
+                />
+
+                <div className="absolute bottom-14 left-1/2 transform -translate-x-1/2 text-white/90 text-base bg-black/60 px-4 py-2 rounded" style={{ zIndex: 60 }}>{idx + 1} / {total}</div>
+
+                {/* Arrow key hints */}
+                <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 text-sm text-white/90 bg-black/60 px-4 py-2 rounded flex items-center gap-3" style={{ zIndex: 60 }}>
+                  <span className="font-semibold">← / →</span>
+                  <span className="opacity-90">navigate</span>
+                  <span className="mx-2">•</span>
+                  <span className="opacity-90">Home/End jump</span>
+                  <span className="mx-2">•</span>
+                  <span className="opacity-90">Esc close</span>
+                </div>
+              </div>
+            </div>
+          );
+        })()
       )}
     </div>
   );
