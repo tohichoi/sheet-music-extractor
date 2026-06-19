@@ -223,6 +223,12 @@ def create_video_record(
     height: int,
     duration: float,
     fps: float,
+    crop_x: float = None,
+    crop_y: float = None,
+    crop_w: float = None,
+    crop_h: float = None,
+    start_time: float = None,
+    end_time: float = None,
 ) -> Video:
     video = Video(
         original_filename=original_filename,
@@ -233,6 +239,12 @@ def create_video_record(
         height=height,
         duration=duration,
         fps=fps,
+        crop_x=crop_x,
+        crop_y=crop_y,
+        crop_w=crop_w,
+        crop_h=crop_h,
+        start_time=start_time,
+        end_time=end_time,
         status='uploaded',
     )
     db.add(video)
@@ -287,6 +299,12 @@ async def upload_video(
         height=height,
         duration=duration,
         fps=fps,
+        crop_x=crop_x,
+        crop_y=crop_y,
+        crop_w=crop_w,
+        crop_h=crop_h,
+        start_time=start_time,
+        end_time=end_time,
     )
 
     # 🌟 4. 백그라운드 워커에 시간 구간 파라미터 함께 전달
@@ -356,6 +374,16 @@ def export_keyframes_to_pdf(
 def delete_video(video_id: int, db: Session = Depends(get_db)):
     video = get_db_video(video_id, db)
 
+    import os
+    import stat
+    def remove_readonly(func, path, _):
+        try:
+            os.chmod(path, stat.S_IWRITE)
+            func(path)
+        except Exception:
+            pass
+
+
     # 1. 연관된 PDF 파일들 삭제
     # 파일명이 'sheet_music_video_{video_id}_' 로 시작하는 모든 PDF 검색 및 삭제
     for pdf_file in PDF_DIR.glob(f'sheet_music_video_{video_id}_*.pdf'):
@@ -364,11 +392,11 @@ def delete_video(video_id: int, db: Session = Depends(get_db)):
     # 2. 해당 비디오 전용 키프레임 및 임시 폴더 삭제
     keyframe_dir = Path(f'storage/keyframes/{video_id}')
     if keyframe_dir.exists() and keyframe_dir.is_dir():
-        shutil.rmtree(keyframe_dir, ignore_errors=True)
+        shutil.rmtree(keyframe_dir, onerror=remove_readonly)
 
     temp_dir = Path(f'storage/temp/{video_id}')
     if temp_dir.exists() and temp_dir.is_dir():
-        shutil.rmtree(temp_dir, ignore_errors=True)
+        shutil.rmtree(temp_dir, onerror=remove_readonly)
 
     # 3. 원본 비디오 파일 및 공용 캐시 폴더 삭제 (안전 검사)
     # 다른 ROI 설정으로 동일한 원본 파일을 참조하는 Video 레코드가 있는지 확인합니다.
@@ -382,9 +410,9 @@ def delete_video(video_id: int, db: Session = Depends(get_db)):
 
         # 파일명 구조({base_file_hash}_{filename})에서 base_file_hash를 역추적하여 캐시 폴더도 삭제
         base_file_hash = video_file.name.split('_')[0]
-        cache_dir = Path(f'storage/cache/iframes/{base_file_hash}')
-        if cache_dir.exists() and cache_dir.is_dir():
-            shutil.rmtree(cache_dir, ignore_errors=True)
+        for c_dir in Path('storage/cache/iframes').glob(f'{base_file_hash}*'):
+            if c_dir.is_dir():
+                shutil.rmtree(c_dir, onerror=remove_readonly)
 
     # 4. 데이터베이스 레코드 삭제
     # KeyFrame 테이블 레코드는 삭제 전 연결된 외래키를 통해 지우거나 명시적으로 지웁니다.

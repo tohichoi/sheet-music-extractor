@@ -23,6 +23,14 @@ class VideoResponse(BaseModel):
     duration: Optional[float] = None
     fps: Optional[float] = None
     
+    # Extraction settings
+    crop_x: Optional[float] = None
+    crop_y: Optional[float] = None
+    crop_w: Optional[float] = None
+    crop_h: Optional[float] = None
+    start_time: Optional[float] = None
+    end_time: Optional[float] = None
+    
     # ✅ 추가: 프론트엔드로 전달할 진행률 필드
     progress: Optional[float] = 0.0
     

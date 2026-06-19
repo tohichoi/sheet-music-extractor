@@ -20,6 +20,14 @@ class Video(Base):
     
     # ✅ 새로 추가된 컬럼: 진행률 (0.0 ~ 100.0)
     progress = Column(Float, default=0.0) 
+
+    # Extraction settings
+    crop_x = Column(Float, nullable=True)
+    crop_y = Column(Float, nullable=True)
+    crop_w = Column(Float, nullable=True)
+    crop_h = Column(Float, nullable=True)
+    start_time = Column(Float, nullable=True)
+    end_time = Column(Float, nullable=True)
     
     upload_time = Column(DateTime, default=datetime.utcnow)
     status = Column(String, default="uploaded") 

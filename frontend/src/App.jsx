@@ -51,6 +51,8 @@ function App() {
   const origCropRef = useRef(null); // { left, top, width, height } in px
   const cropDivRef = useRef(null);
   const resizeDirRef = useRef(null);
+  const cursorTooltipRef = useRef(null);
+  const fileInputRef = useRef(null);
 
   const [checkedFrames, setCheckedFrames] = useState(() => new Set());
   const [isDrawMode, setIsDrawMode] = useState(() => {
@@ -465,38 +467,63 @@ function App() {
     });
   };
 
+  const handlePointerLeave = (e) => {
+    if (cursorTooltipRef.current) cursorTooltipRef.current.style.display = 'none';
+  };
+
   const handlePointerMove = (e) => {
     // Hover cursor: show 'grab' when pointer is over existing ROI, 'crosshair' when draw mode enabled
     const container = e.currentTarget;
     if (container) {
       const containerRect = container.getBoundingClientRect();
-      if (cropRect && isDrawMode && actionRef.current !== 'move' && !maybeDrawingRef.current && !isDrawing) {
-        const localX = e.clientX - containerRect.left;
-        const localY = e.clientY - containerRect.top;
-        const cropLeft = cropRect.x * containerRect.width;
-        const cropTop = cropRect.y * containerRect.height;
-        const cropW = cropRect.width * containerRect.width;
-        const cropH = cropRect.height * containerRect.height;
-        const isOverCrop = (localX >= cropLeft && localX <= cropLeft + cropW && localY >= cropTop && localY <= cropTop + cropH);
-        if (isOverCrop) {
-          container.style.cursor = 'grab';
-          // show highlight and handle
-          if (cropDivRef.current) {
-            cropDivRef.current.style.boxShadow = '0 0 0 4px rgba(59,130,246,0.12)';
-            cropDivRef.current.style.borderColor = 'rgba(59,130,246,1)';
-          }
-            // show all resize handles
+      
+      // Update cursor tooltip position if draw mode is on and no ROI is selected
+      if (cursorTooltipRef.current) {
+        if (isDrawMode && !cropRect && !isDrawing) {
+          cursorTooltipRef.current.style.display = 'block';
+          const localX = e.clientX - containerRect.left;
+          const localY = e.clientY - containerRect.top;
+          cursorTooltipRef.current.style.transform = `translate3d(${localX + 15}px, ${localY + 15}px, 0)`;
+        } else {
+          cursorTooltipRef.current.style.display = 'none';
+        }
+      }
+
+      if (isDrawMode) {
+        if (cropRect && actionRef.current !== 'move' && !maybeDrawingRef.current && !isDrawing) {
+          const localX = e.clientX - containerRect.left;
+          const localY = e.clientY - containerRect.top;
+          const cropLeft = cropRect.x * containerRect.width;
+          const cropTop = cropRect.y * containerRect.height;
+          const cropW = cropRect.width * containerRect.width;
+          const cropH = cropRect.height * containerRect.height;
+          const isOverCrop = (localX >= cropLeft && localX <= cropLeft + cropW && localY >= cropTop && localY <= cropTop + cropH);
+          if (isOverCrop) {
+            container.style.cursor = 'grab';
+            if (cropDivRef.current) {
+              cropDivRef.current.style.boxShadow = '0 0 0 4px rgba(59,130,246,0.12)';
+              cropDivRef.current.style.borderColor = 'rgba(59,130,246,1)';
+            }
             const handles = cropDivRef.current?.querySelectorAll('.resize-handle');
             if (handles) handles.forEach(h => h.style.display = 'block');
-        } else {
-          container.style.cursor = 'crosshair';
-          if (cropDivRef.current) {
-            cropDivRef.current.style.boxShadow = '';
-            cropDivRef.current.style.borderColor = '';
-          }
+          } else {
+            container.style.cursor = 'crosshair';
+            if (cropDivRef.current) {
+              cropDivRef.current.style.boxShadow = '';
+              cropDivRef.current.style.borderColor = '';
+            }
             const handles = cropDivRef.current?.querySelectorAll('.resize-handle');
             if (handles) handles.forEach(h => h.style.display = 'none');
+          }
         }
+      } else {
+        container.style.cursor = '';
+        if (cropDivRef.current) {
+          cropDivRef.current.style.boxShadow = '';
+          cropDivRef.current.style.borderColor = '';
+        }
+        const handles = cropDivRef.current?.querySelectorAll('.resize-handle');
+        if (handles) handles.forEach(h => h.style.display = 'none');
       }
     }
 
@@ -837,6 +864,44 @@ function App() {
     setStatus('Idle');
     setVideoFile(null);
     setVideoPreviewUrl(null);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+    
+    // 이전에 입력했던 모든 파일 정보와 상태를 초기화
+    setCheckedFrames(new Set());
+    setSelectedImageIndex(null);
+    setDisplayedImageIndex(null);
+    setCropRect(null);
+    setStartTime(0);
+    setEndTime(0);
+  };
+
+  const handleDeleteVideo = async () => {
+    if (!videoInfo || !videoInfo.id) return;
+    
+    const confirmDelete = window.confirm(
+      "⚠️ [Permanent Server Data Deletion]\n\n" +
+      "This action will permanently delete the uploaded source video, extracted keyframe images, and temporary/PDF files from the server storage.\n\n" +
+      "Are you sure you want to delete all data from the server?"
+    );
+    if (!confirmDelete) return;
+
+    try {
+      setStatus('🗑️ Deleting server data...');
+      const response = await fetch(`${API_BASE_URL}/${videoInfo.id}/delete`);
+      if (!response.ok) {
+        throw new Error(`Server response error (Status: ${response.status})`);
+      }
+      await response.json();
+      alert('All video data and files have been successfully deleted from the server.');
+      
+      // Reset local state
+      handleReset();
+
+    } catch (error) {
+      console.error('Delete error:', error);
+      alert(`An error occurred while deleting data: ${error.message}`);
+      setStatus('❌ Delete failed');
+    }
   };
 
   const toggleFrameChecked = (index) => {
@@ -901,47 +966,104 @@ function App() {
         </h1>
         <div className="flex gap-3 items-center">
           <div className="flex items-center rounded-md bg-slate-100 dark:bg-slate-800 p-1">
-            <button
-              onClick={(e) => { e.stopPropagation(); setIsWide(false); }}
-              className={`px-3 py-1 rounded-md text-sm font-medium transition ${!isWide ? 'bg-white text-slate-800' : 'text-slate-600 hover:bg-slate-200'}`}
-              title="Default layout"
-            >
-              Default
-            </button>
-            <button
-              onClick={(e) => { e.stopPropagation(); setIsWide(true); }}
-              className={`ml-1 px-3 py-1 rounded-md text-sm font-medium transition ${isWide ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-200'}`}
-              title="Wide layout (minimal margins)"
-            >
-              Wide
-            </button>
+            <div className="relative group flex items-center">
+              <button
+                onClick={(e) => { e.stopPropagation(); setIsWide(false); }}
+                className={`px-3 py-1 rounded-md text-sm font-medium transition ${!isWide ? 'bg-white dark:bg-slate-600 text-slate-800 dark:text-white shadow-sm' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700'}`}
+              >
+                Default
+              </button>
+              <div className="absolute top-full mt-2 left-1/2 -translate-x-1/2 opacity-0 group-hover:opacity-100 pointer-events-none bg-slate-800 dark:bg-slate-600 text-white font-medium text-xs rounded-md py-1.5 px-3 whitespace-nowrap w-max transition-all duration-200 shadow-lg z-50 translate-y-1 group-hover:translate-y-0">
+                Default layout
+              </div>
+            </div>
+            <div className="relative group flex items-center ml-1">
+              <button
+                onClick={(e) => { e.stopPropagation(); setIsWide(true); }}
+                className={`px-3 py-1 rounded-md text-sm font-medium transition ${isWide ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700'}`}
+              >
+                Wide
+              </button>
+              <div className="absolute top-full mt-2 left-1/2 -translate-x-1/2 opacity-0 group-hover:opacity-100 pointer-events-none bg-slate-800 dark:bg-slate-600 text-white font-medium text-xs rounded-md py-1.5 px-3 whitespace-nowrap w-max transition-all duration-200 shadow-lg z-50 translate-y-1 group-hover:translate-y-0">
+                Wide layout (minimal margins)
+              </div>
+            </div>
           </div>
 
-          <button 
-            className="px-4 py-2 rounded-lg font-semibold text-sm cursor-pointer transition-all duration-200 bg-slate-100 hover:bg-slate-200 text-slate-700 dark:bg-slate-700 dark:hover:bg-slate-600 dark:text-slate-200"
-            onClick={handleReset}
-          >
-            🔄 Reset
-          </button>
-          <button 
-            onClick={() => setIsDarkMode(!isDarkMode)} 
-            className="w-10 h-10 flex items-center justify-center rounded-full bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 transition-colors text-lg"
-            title="Toggle theme"
-          >
-            {isDarkMode ? '☀️' : '🌙'}
-          </button>
+          {videoInfo && (
+            <div className="relative group flex items-center">
+              <button 
+                className={`px-4 py-2 rounded-lg font-semibold text-sm cursor-pointer transition-all duration-200 border ${
+                  videoInfo.status === 'processing'
+                    ? 'bg-red-50/30 text-red-400 border-red-200/20 cursor-not-allowed dark:bg-red-950/10 dark:text-red-800 dark:border-red-900/10'
+                    : 'bg-red-50 hover:bg-red-100 text-red-600 border-red-200 dark:bg-red-950/20 dark:hover:bg-red-950/40 dark:text-red-400 dark:border-red-900/50'
+                }`}
+                onClick={handleDeleteVideo}
+                disabled={videoInfo.status === 'processing'}
+              >
+                🗑️ Delete from Server
+              </button>
+              <div className="absolute top-full mt-2 right-0 lg:left-1/2 lg:-translate-x-1/2 opacity-0 group-hover:opacity-100 pointer-events-none bg-red-600 text-white font-medium text-xs rounded-md py-1.5 px-3 whitespace-nowrap w-max transition-all duration-200 shadow-lg z-50 translate-y-1 group-hover:translate-y-0">
+                {videoInfo.status === 'processing' ? 'Processing in progress. Cannot delete.' : 'Permanently delete video & files from server'}
+              </div>
+            </div>
+          )}
+
+          <div className="relative group flex items-center">
+            <button 
+              className="px-4 py-2 rounded-lg font-semibold text-sm cursor-pointer transition-all duration-200 bg-slate-100 hover:bg-slate-200 text-slate-700 dark:bg-slate-700 dark:hover:bg-slate-600 dark:text-slate-200"
+              onClick={handleReset}
+            >
+              🔄 Start Over
+            </button>
+            <div className="absolute top-full mt-2 right-0 lg:left-1/2 lg:-translate-x-1/2 opacity-0 group-hover:opacity-100 pointer-events-none bg-slate-800 dark:bg-slate-600 text-white font-medium text-xs rounded-md py-1.5 px-3 whitespace-nowrap w-max transition-all duration-200 shadow-lg z-50 translate-y-1 group-hover:translate-y-0">
+              Clear current video and start new session
+            </div>
+          </div>
+          <div className="relative group flex items-center">
+            <button 
+              onClick={() => setIsDarkMode(!isDarkMode)} 
+              className="w-10 h-10 flex items-center justify-center rounded-full bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 transition-colors text-lg shadow-sm"
+            >
+              {isDarkMode ? '☀️' : '🌙'}
+            </button>
+            <div className="absolute top-full mt-2 right-0 opacity-0 group-hover:opacity-100 pointer-events-none bg-slate-800 dark:bg-slate-600 text-white font-medium text-xs rounded-md py-1.5 px-3 whitespace-nowrap w-max transition-all duration-200 shadow-lg z-50 translate-y-1 group-hover:translate-y-0">
+              Toggle theme
+            </div>
+          </div>
         </div>
       </header>
       
       <div className={cardClass}>
         <h3 className="text-lg font-bold mb-4">📁 1. Select video and extraction settings</h3>
-        <input 
-          type="file" 
-          accept="video/*" 
-          onChange={handleManualUpload} 
-          disabled={videoInfo?.status === 'processing'}
-          className="block w-full text-sm text-slate-500 dark:text-slate-400 file:mr-4 file:py-2.5 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 dark:file:bg-slate-700 dark:file:text-blue-400 dark:hover:file:bg-slate-600 transition-all cursor-pointer border border-dashed border-slate-300 dark:border-slate-600 rounded-xl p-4 bg-slate-50 dark:bg-slate-800/50"
-        />
+        {videoInfo ? (
+          <div className="flex items-center justify-between p-4 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-xl">
+            <div className="flex items-center gap-3 overflow-hidden">
+              <span className="text-2xl shrink-0">📄</span>
+              <div className="truncate">
+                <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-0.5">Selected Video</p>
+                <p className="text-sm font-medium text-slate-800 dark:text-slate-200 truncate" title={videoInfo.original_filename}>{videoInfo.original_filename}</p>
+              </div>
+            </div>
+            {videoInfo.status !== 'processing' && (
+              <button 
+                onClick={handleReset} 
+                className="shrink-0 ml-4 px-4 py-2 text-sm font-semibold text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 dark:bg-slate-700 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-600 transition-colors shadow-sm"
+              >
+                Change File
+              </button>
+            )}
+          </div>
+        ) : (
+          <input 
+            type="file" 
+            accept="video/*" 
+            ref={fileInputRef}
+            onChange={handleManualUpload} 
+            disabled={status.includes('Uploading')}
+            className="block w-full text-sm text-slate-500 dark:text-slate-400 file:mr-4 file:py-2.5 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 dark:file:bg-slate-700 dark:file:text-blue-400 dark:hover:file:bg-slate-600 transition-all cursor-pointer border border-dashed border-slate-300 dark:border-slate-600 rounded-xl p-4 bg-slate-50 dark:bg-slate-800/50"
+          />
+        )}
         
         {videoPreviewUrl && (
             <div className="mt-6 flex flex-col items-center">
@@ -1024,7 +1146,22 @@ function App() {
                 onPointerMove={handlePointerMove}
                 onPointerUp={handlePointerUp}
                 onPointerCancel={handlePointerUp}
+                onPointerLeave={handlePointerLeave}
               >
+                <div
+                  ref={cursorTooltipRef}
+                  className="bg-slate-800/90 dark:bg-slate-700/90 text-white font-medium text-xs px-2.5 py-1.5 rounded-md shadow-lg whitespace-nowrap pointer-events-none backdrop-blur-sm"
+                  style={{
+                    position: 'absolute',
+                    left: 0,
+                    top: 0,
+                    display: 'none',
+                    zIndex: 40,
+                    willChange: 'transform'
+                  }}
+                >
+                  Drag to select ROI
+                </div>
                 <div
                   ref={gridRef}
                 style={{
@@ -1168,8 +1305,14 @@ function App() {
               <div className="font-medium text-slate-800 dark:text-slate-200 break-words whitespace-normal">{videoInfo.original_filename}</div>
             </div>
 
-            {/* Second row: three equal columns for File size / Resolution / Duration */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {/* Extended Metadata Grid */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="p-4 bg-slate-50 dark:bg-slate-900 rounded-xl">
+                <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider block mb-1">Format / FPS</span>
+                <span className="font-medium text-slate-800 dark:text-slate-200 block">
+                  {videoInfo.original_filename?.split('.').pop()?.toUpperCase() || 'VIDEO'} ({videoInfo.fps ? videoInfo.fps.toFixed(2) : '--'} FPS)
+                </span>
+              </div>
               <div className="p-4 bg-slate-50 dark:bg-slate-900 rounded-xl">
                 <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider block mb-1">File size</span>
                 <span className="font-medium text-slate-800 dark:text-slate-200 block">{formatSize(videoInfo.file_size)}</span>
@@ -1182,6 +1325,46 @@ function App() {
                 <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider block mb-1">Duration</span>
                 <span className="font-medium text-slate-800 dark:text-slate-200 block">{formatDurationInfo(videoInfo.duration)}</span>
               </div>
+              <div className="p-4 bg-slate-50 dark:bg-slate-900 rounded-xl">
+                <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider block mb-1">Processing Date</span>
+                <span className="font-medium text-slate-800 dark:text-slate-200 block">
+                  {videoInfo.upload_time ? new Date(videoInfo.upload_time).toLocaleString() : '--'}
+                </span>
+              </div>
+              <div className="p-4 bg-slate-50 dark:bg-slate-900 rounded-xl">
+                <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider block mb-1">Time Range</span>
+                <span className="font-medium text-slate-800 dark:text-slate-200 block">
+                  {videoInfo.start_time != null && videoInfo.end_time != null ? `${formatDurationStr(videoInfo.start_time)} ~ ${formatDurationStr(videoInfo.end_time)}` : 'Full Video'}
+                </span>
+              </div>
+              <div className="p-4 bg-slate-50 dark:bg-slate-900 rounded-xl">
+                <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider block mb-1">Crop (ROI)</span>
+                <span className="font-medium text-slate-800 dark:text-slate-200 block">
+                  {videoInfo.crop_w && (videoInfo.crop_w < 1.0 || videoInfo.crop_h < 1.0) ? `Applied (${(videoInfo.crop_w * 100).toFixed(0)}% x ${(videoInfo.crop_h * 100).toFixed(0)}%)` : 'Not Applied'}
+                </span>
+              </div>
+              <div className="p-4 bg-slate-50 dark:bg-slate-900 rounded-xl border border-blue-100 dark:border-blue-900/50">
+                <span className="text-xs font-semibold text-blue-600 dark:text-blue-400 uppercase tracking-wider block mb-1">Extracted Pages</span>
+                <span className="font-bold text-blue-700 dark:text-blue-300 block text-lg">
+                  {videoInfo.keyframes?.length > 0 ? `${videoInfo.keyframes.length} pages` : (videoInfo.status === 'completed' ? '0 pages' : 'Processing...')}
+                </span>
+              </div>
+            </div>
+
+            {/* 🗑️ Delete Video from Server option */}
+            <div className="flex justify-end mt-2">
+              <button 
+                onClick={handleDeleteVideo}
+                disabled={videoInfo.status === 'processing'}
+                className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-semibold text-sm cursor-pointer transition-all duration-200 border ${
+                  videoInfo.status === 'processing'
+                    ? 'bg-red-50/30 text-red-400 border-red-200/20 cursor-not-allowed dark:bg-red-950/10 dark:text-red-800 dark:border-red-900/10'
+                    : 'bg-red-50 hover:bg-red-100 text-red-600 border-red-200 dark:bg-red-950/20 dark:hover:bg-red-950/40 dark:text-red-400 dark:border-red-900/50'
+                }`}
+                title={videoInfo.status === 'processing' ? 'Cannot delete while processing.' : 'Permanently delete this video and all generated files from the server storage'}
+              >
+                🗑️ Delete from Server
+              </button>
             </div>
           </div>
         </div>
@@ -1272,72 +1455,74 @@ function App() {
           const idx = displayed;
           return (
             <div 
-              className="fixed inset-0 bg-slate-900/95 backdrop-blur-md z-50 flex items-center justify-center p-4 animate-in fade-in duration-200"
+              className="fixed inset-0 bg-slate-50/95 dark:bg-slate-900/95 backdrop-blur-md z-50 flex items-center justify-center p-4 animate-in fade-in duration-200"
               onClick={(e) => { if (e.target === e.currentTarget) { setSelectedImageIndex(null); setDisplayedImageIndex(null); } }}
               tabIndex={-1}
             >
-              <div className="relative max-w-[95vw] max-h-[95vh] flex items-center justify-center">
-                <button 
-                  onClick={(e) => { e.stopPropagation(); setSelectedImageIndex(null); setDisplayedImageIndex(null); }} 
-                  className="absolute -top-12 right-0 text-white text-2xl transition-colors bg-black/50 p-1.5 rounded-full hover:bg-black/60"
-                  style={{ zIndex: 70 }}
-                  aria-label="Close"
-                >
-                  ×
-                </button>
+              {/* Close button at the top-right corner of the viewport */}
+              <button 
+                onClick={(e) => { e.stopPropagation(); setSelectedImageIndex(null); setDisplayedImageIndex(null); }} 
+                className="absolute top-4 right-4 text-slate-800 dark:text-white text-2xl transition-colors bg-slate-200/80 dark:bg-slate-800/90 dark:border dark:border-slate-600 p-2 rounded-full hover:bg-slate-300 dark:hover:bg-slate-700 shadow-lg backdrop-blur-sm"
+                style={{ zIndex: 70 }}
+                aria-label="Close"
+              >
+                ×
+              </button>
 
-                {/* Left click zone */}
-                <div
-                  onClick={(e) => { e.stopPropagation(); setSelectedImageIndex((cur) => (cur === null ? 0 : (cur - 1 + total) % total)); }}
-                  className="absolute left-0 top-0 h-full w-1/2"
-                  style={{ zIndex: 30 }}
-                  aria-hidden
-                />
-                {/* Right click zone */}
-                <div
-                  onClick={(e) => { e.stopPropagation(); setSelectedImageIndex((cur) => (cur === null ? 0 : (cur + 1) % total)); }}
-                  className="absolute right-0 top-0 h-full w-1/2"
-                  style={{ zIndex: 30 }}
-                  aria-hidden
-                />
+              {/* Fixed Left Navigation Controls */}
+              <div className="absolute left-8 top-1/2 transform -translate-y-1/2 flex flex-col gap-3" style={{ zIndex: 60 }}>
+                <button onClick={(e) => { e.stopPropagation(); setSelectedImageIndex(0); }} className="bg-slate-200 dark:bg-slate-800/90 dark:border dark:border-slate-600 text-slate-800 dark:text-white px-5 py-3 rounded-xl hover:bg-slate-300 dark:hover:bg-slate-700 transition-all text-base font-semibold shadow-lg backdrop-blur-sm">Start</button>
+                <button onClick={(e) => { e.stopPropagation(); setSelectedImageIndex((cur) => (cur === null ? 0 : (cur - 1 + total) % total)); }} className="bg-slate-200 dark:bg-slate-800/90 dark:border dark:border-slate-600 text-slate-800 dark:text-white px-5 py-3 rounded-xl hover:bg-slate-300 dark:hover:bg-slate-700 transition-all text-base font-semibold shadow-lg backdrop-blur-sm">◀ Prev</button>
+              </div>
 
-                {/* First / Prev controls (looping) */}
-                <div className="absolute left-4 top-1/2 transform -translate-y-1/2 flex flex-col gap-2" style={{ zIndex: 60 }}>
-                  <button onClick={(e) => { e.stopPropagation(); setSelectedImageIndex(0); }} className="bg-black/60 text-white px-4 py-3 rounded hover:bg-black/70 text-lg font-semibold">Start</button>
-                  <button onClick={(e) => { e.stopPropagation(); setSelectedImageIndex((cur) => (cur === null ? 0 : (cur - 1 + total) % total)); }} className="bg-black/60 text-white px-4 py-3 rounded hover:bg-black/70 text-lg font-semibold">◀ Prev</button>
-                </div>
+              {/* Fixed Right Navigation Controls */}
+              <div className="absolute right-8 top-1/2 transform -translate-y-1/2 flex flex-col gap-3" style={{ zIndex: 60 }}>
+                <button onClick={(e) => { e.stopPropagation(); setSelectedImageIndex((cur) => (cur === null ? 0 : (cur + 1) % total)); }} className="bg-slate-200 dark:bg-slate-800/90 dark:border dark:border-slate-600 text-slate-800 dark:text-white px-5 py-3 rounded-xl hover:bg-slate-300 dark:hover:bg-slate-700 transition-all text-base font-semibold shadow-lg backdrop-blur-sm">Next ▶</button>
+                <button onClick={(e) => { e.stopPropagation(); setSelectedImageIndex(total - 1); }} className="bg-slate-200 dark:bg-slate-800/90 dark:border dark:border-slate-600 text-slate-800 dark:text-white px-5 py-3 rounded-xl hover:bg-slate-300 dark:hover:bg-slate-700 transition-all text-base font-semibold shadow-lg backdrop-blur-sm">End</button>
+              </div>
 
-                {/* Next / Last controls (looping) */}
-                <div className="absolute right-4 top-1/2 transform -translate-y-1/2 flex flex-col gap-2" style={{ zIndex: 60 }}>
-                  <button onClick={(e) => { e.stopPropagation(); setSelectedImageIndex((cur) => (cur === null ? 0 : (cur + 1) % total)); }} className="bg-black/60 text-white px-4 py-3 rounded hover:bg-black/70 text-lg font-semibold">Next ▶</button>
-                  <button onClick={(e) => { e.stopPropagation(); setSelectedImageIndex(total - 1); }} className="bg-black/60 text-white px-4 py-3 rounded hover:bg-black/70 text-lg font-semibold">End</button>
-                </div>
+              {/* Left/Right click zones for easy click-navigation */}
+              <div
+                onClick={(e) => { e.stopPropagation(); setSelectedImageIndex((cur) => (cur === null ? 0 : (cur - 1 + total) % total)); }}
+                className="absolute left-0 top-0 h-full w-[20vw] cursor-pointer"
+                style={{ zIndex: 30 }}
+                aria-hidden
+              />
+              <div
+                onClick={(e) => { e.stopPropagation(); setSelectedImageIndex((cur) => (cur === null ? 0 : (cur + 1) % total)); }}
+                className="absolute right-0 top-0 h-full w-[20vw] cursor-pointer"
+                style={{ zIndex: 30 }}
+                aria-hidden
+              />
 
+              {/* Centered Image Container - keeps a safe distance from side controls */}
+              <div className="flex items-center justify-center w-full max-w-[calc(100vw-360px)] max-h-[80vh]" style={{ zIndex: 40 }} onClick={(e) => e.stopPropagation()}>
                 <img 
                   src={imgUrl} 
                   alt={`Enlarged frame ${idx + 1}`} 
                   style={{
                     position: 'relative',
-                    zIndex: 40,
                     opacity: imgVisible ? 1 : 0,
                     transition: `opacity ${IMAGE_TRANS_MS}ms ease, transform ${IMAGE_TRANS_MS}ms ease`,
                     transform: imgVisible ? 'translateX(0)' : `translateX(${ - (slideDir || 1) * 12 }px)`
                   }}
-                  className="max-w-full max-h-[90vh] object-contain rounded-xl shadow-2xl bg-white dark:bg-slate-900"
-                  onClick={(e) => e.stopPropagation()} 
+                  className="max-w-full max-h-[80vh] object-contain rounded-xl shadow-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700/50"
                 />
+              </div>
 
-                <div className="absolute bottom-14 left-1/2 transform -translate-x-1/2 text-white/90 text-base bg-black/60 px-4 py-2 rounded" style={{ zIndex: 60 }}>{idx + 1} / {total}</div>
+              {/* Counter Label */}
+              <div className="absolute bottom-16 left-1/2 transform -translate-x-1/2 text-slate-800 dark:text-white text-sm font-semibold bg-slate-200 dark:bg-slate-800/90 px-5 py-2.5 rounded-xl shadow-lg font-mono border border-slate-300/50 dark:border-slate-600 backdrop-blur-sm" style={{ zIndex: 60 }}>
+                {idx + 1} / {total}
+              </div>
 
-                {/* Arrow key hints */}
-                <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 text-sm text-white/90 bg-black/60 px-4 py-2 rounded flex items-center gap-3" style={{ zIndex: 60 }}>
-                  <span className="font-semibold">← / →</span>
-                  <span className="opacity-90">navigate</span>
-                  <span className="mx-2">•</span>
-                  <span className="opacity-90">Home/End jump</span>
-                  <span className="mx-2">•</span>
-                  <span className="opacity-90">Esc close</span>
-                </div>
+              {/* Keyboard Navigation Hints */}
+              <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 text-xs text-slate-600 dark:text-white/80 bg-slate-200/50 dark:bg-slate-800/80 px-4 py-2 rounded-xl flex items-center gap-3 backdrop-blur-md border border-slate-300/30 dark:border-slate-600" style={{ zIndex: 60 }}>
+                <span className="font-semibold">← / →</span>
+                <span className="opacity-90">navigate</span>
+                <span className="opacity-40">•</span>
+                <span className="opacity-90">Home/End jump</span>
+                <span className="opacity-40">•</span>
+                <span className="opacity-90">Esc close</span>
               </div>
             </div>
           );
