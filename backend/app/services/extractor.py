@@ -154,8 +154,8 @@ def auto_crop_by_projection(image: np.ndarray, margin: int = 10) -> np.ndarray:
 
     return cropped_img[y_min:y_max, x_min:x_max]
 
-def find_best_threshold_silhouette(X: np.ndarray, thresholds: List[float] = [0.01, 0.02, 0.03, 0.04, 0.05, 0.08, 0.1]) -> float:
-    best_threshold = 0.03
+def find_best_threshold_silhouette(X: np.ndarray, thresholds: List[float] = [0.05, 0.08, 0.1, 0.12, 0.15, 0.18, 0.2]) -> float:
+    best_threshold = 0.15
     best_score = -1
     for th in thresholds:
         try:
@@ -198,7 +198,7 @@ def extract_keyframes_core(
         end_time: Optional[float] = None,   # 파라미터 추가
         progress_callback: Optional[Callable[[float], None]] = None
 ) -> List[Dict]:
-    if progress_callback: progress_callback(10.0)
+    if progress_callback: progress_callback(5.0)
 
     timestamps_file = os.path.join(cache_dir, "timestamps.txt")
     cached_files = [f for f in os.listdir(cache_dir) if f.startswith("iframe_")] if os.path.exists(cache_dir) else []
@@ -221,12 +221,17 @@ def extract_keyframes_core(
         extract_iframes_via_ffmpeg(file_path, cache_dir, start_time, end_time)
         shutil.copytree(cache_dir, temp_dir, dirs_exist_ok=True)
 
-    if progress_callback: progress_callback(40.0)
+    if progress_callback: progress_callback(30.0)
 
-    # 🌟 2. ROI 크롭 및 특징(Feature) 추출 + 파일 교체(덮어쓰기)
+    # 🌟 2. ROI 크롭 및 품질 기반 사전 필터링
     extracted_files = sorted([f for f in os.listdir(temp_dir) if f.startswith("iframe_")])
-    features, valid_files, valid_timestamps = [], [], []
-
+    total_extracted = len(extracted_files)
+    
+    # 먼저 모든 프레임의 크롭 본을 만들고 밝기/대비 통계를 추출합니다.
+    temp_frames = []
+    means = []
+    stds = []
+    
     for i, filename in enumerate(extracted_files):
         filepath = os.path.join(temp_dir, filename)
         frame = cv2.imread(filepath)
@@ -238,45 +243,95 @@ def extract_keyframes_core(
         if roi_frame is None or roi_frame.size == 0:
             continue
 
-        # ✨ 핵심: 크롭된 이미지를 원본 파일에 완벽하게 덮어쓰기!
+        # 임시 저장을 통해 원본 교체
         cv2.imwrite(filepath, roi_frame)
 
-        small_frame = cv2.resize(roi_frame, (64, 64))
-        gray = cv2.cvtColor(small_frame, cv2.COLOR_BGR2GRAY)
+        gray = cv2.cvtColor(roi_frame, cv2.COLOR_BGR2GRAY)
+        means.append(np.mean(gray))
+        stds.append(np.std(gray))
+        temp_frames.append((filename, roi_frame, i))
+        
+        # 진행 상태: 30% ~ 70% 구간을 프레임별로 나눠 반영
+        if progress_callback and total_extracted > 0:
+            progress_callback(30.0 + 40.0 * (i + 1) / total_extracted)
 
-        features.append(gray.flatten())
+    if len(temp_frames) == 0:
+        if progress_callback: progress_callback(95.0)
+        return []
+
+    # 전체 비디오의 밝기 모드 결정 (모든 크롭 프레임의 중앙값 밝기 기준)
+    global_light_mode = np.median(means) > 127.0
+
+    features, valid_files, valid_timestamps, valid_stds = [], [], [], []
+
+    for idx, (filename, roi_frame, orig_idx) in enumerate(temp_frames):
+        mean_val = means[idx]
+        std_val = stds[idx]
+
+        # [필터링 1] 대비(표준편차)가 20.0 미만인 경우 (단색, 크레딧, 혹은 블랙 아웃트로 화면) 제외
+        if std_val < 20.0:
+            continue
+
+        # [필터링 2] 밝은 비디오인데 크롭 영역의 평균 밝기가 150 미만인 경우 (어두운 페이드 트랜지션) 제외
+        if global_light_mode and mean_val < 150.0:
+            continue
+
+        # 특징 벡터 추출 (64x64 크롭 및 조건부 반전 적용)
+        small_frame = cv2.resize(roi_frame, (64, 64))
+        small_gray = cv2.cvtColor(small_frame, cv2.COLOR_BGR2GRAY)
+        feature_vector = (255 - small_gray) if global_light_mode else small_gray
+
+        features.append(feature_vector.flatten())
         valid_files.append(filename)
-        ts = timestamps[i] if i < len(timestamps) else (i * 1.0)
+        
+        ts = timestamps[orig_idx] if orig_idx < len(timestamps) else (orig_idx * 1.0)
         valid_timestamps.append(ts)
+        valid_stds.append(std_val)
 
     if progress_callback: progress_callback(70.0)
 
-    # 🌟 3. 클러스터링 기반 중복 제거 및 최종 저장
+    # 🌟 3. 클러스터링 기반 중복 제거 및 대표 키프레임 선정
     results = []
     if len(features) > 0:
         labels = perform_clustering(features)
-        seen_clusters = set()
-        saved_count = 0
-
+        
+        # 클러스터 번호별 멤버 인덱스 그룹핑
+        cluster_groups = {}
         for idx, label in enumerate(labels):
-            if label not in seen_clusters:
-                seen_clusters.add(label)
+            cluster_groups.setdefault(label, []).append(idx)
 
-                # Step 2에서 덮어씌워진(이미 완벽하게 크롭된) 파일을 그대로 가져옴
-                src_path = os.path.join(temp_dir, valid_files[idx])
-                final_filename = f"frame_{saved_count:04d}.jpg"
-                dest_path = os.path.join(output_dir, final_filename)
+        # 각 클러스터 내에서 가장 명확한(대비/표준편차가 높은) 대표 프레임 선정
+        selected_representatives = []
+        for label, indices in cluster_groups.items():
+            best_idx = max(indices, key=lambda idx: valid_stds[idx])
+            selected_representatives.append((best_idx, label))
 
-                # 🚀 다시 읽고 자를 필요 없이 가장 빠른 파일 복사(shutil.copy)로 마무리!
-                shutil.copy(src_path, dest_path)
+        # 타임라인 순으로 키프레임을 출력하기 위해 원래 인덱스 기준으로 정렬
+        selected_representatives.sort(key=lambda x: x[0])
+        
+        if progress_callback: progress_callback(75.0)
 
-                results.append({
-                    "timestamp": valid_timestamps[idx],
-                    "filename": final_filename
-                })
-                saved_count += 1
+        total_reps = len(selected_representatives)
+        saved_count = 0
+        for best_idx, label in selected_representatives:
+            src_path = os.path.join(temp_dir, valid_files[best_idx])
+            final_filename = f"frame_{saved_count:04d}.jpg"
+            dest_path = os.path.join(output_dir, final_filename)
 
-    if progress_callback: progress_callback(90.0)
+            # 대표 이미지 복사
+            shutil.copy(src_path, dest_path)
+
+            results.append({
+                "timestamp": valid_timestamps[best_idx],
+                "filename": final_filename
+            })
+            saved_count += 1
+            
+            # 진행 상태: 75% ~ 95% 구간을 저장 완료된 키프레임 단위로 나누어 반영
+            if progress_callback and total_reps > 0:
+                progress_callback(75.0 + 20.0 * saved_count / total_reps)
+
+    if progress_callback: progress_callback(95.0)
     return results
 
 

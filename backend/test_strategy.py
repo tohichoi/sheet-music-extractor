@@ -29,12 +29,15 @@ def run_strategy_test(video_file:Path):
     base_dir = os.path.abspath(os.path.dirname(__file__))
     output_dir = os.path.join(base_dir, "strategy_test_output", "keyframes")
     temp_dir = os.path.join(base_dir, "strategy_test_output", "temp")
+    cache_dir = os.path.join(base_dir, "strategy_test_output", "cache")
 
     # 기존 테스트 결과가 있다면 깨끗하게 비우고 새로 생성 (보존을 원하면 이 부분 제거)
     if os.path.exists(output_dir): shutil.rmtree(output_dir)
     if os.path.exists(temp_dir): shutil.rmtree(temp_dir)
+    if os.path.exists(cache_dir): shutil.rmtree(cache_dir)
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(temp_dir, exist_ok=True)
+    os.makedirs(cache_dir, exist_ok=True)
 
     print(f"🎬 전략 테스트 시작: {video_filename}")
     print(f"📂 FFmpeg 원본 I-Frame 폴더 (temp): {temp_dir}")
@@ -44,9 +47,8 @@ def run_strategy_test(video_file:Path):
     def progress_logger(progress: float):
         print(f"⏳ 진행률: {progress:.1f}%")
 
-    # 테스트할 캡처 영역 (전체 영역: 0.0 ~ 1.0)
-    # UI에서 넘겨받는다고 가정한 특정 영역으로 튜닝해 볼 수 있습니다.
-    test_crop_rect = (0.0, 0.0, 1.0, 1.0)
+    # 테스트할 캡처 영역 (실제 악보 영역: 0.0, 0.0, 0.9821, 0.6646)
+    test_crop_rect = (0.0, 0.0, 0.9821, 0.6646)
 
     try:
         # 🌟 DB 접근 없이 순수 파일 처리 코어만 실행 [cite: 1036]
@@ -54,6 +56,7 @@ def run_strategy_test(video_file:Path):
             file_path=video_path,
             output_dir=output_dir,
             temp_dir=temp_dir,
+            cache_dir=cache_dir,
             crop_rect=test_crop_rect,
             progress_callback=progress_logger
         )
