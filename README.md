@@ -24,7 +24,12 @@ This project separates powerful backend processing from an interactive frontend 
 ### Backend Advantages
 
 - **Auto-crop & Intelligent ROI extraction:** Automatically detect and crop the sheet-music region. Users can define an ROI so only the desired music area is extracted; ROI drag-to-select and toggle on/off are supported.
-- **Advanced image processing & AI techniques:** Combines OpenCV-based noise reduction and image preprocessing with AI/heuristics to detect real page turns. Robust even on low-quality videos.
+- **Advanced Image Processing & Intelligent Pipeline Optimization:**
+  - **Background-Invariant Similarity Analysis:** Implemented conditional background inversion (auto-detects Light/Dark mode) to prevent the bright white background of sheet music from dominating the cosine similarity metrics. This focuses calculations purely on the overlap and structure of printed notes and staff lines.
+  - **Outlier-Resistant Silhouette Clustering:** Fixed the silhouette score calculation distortion caused by extreme outliers (like intro, fade transitions, and black outro screens) that previously collapsed all pages into a single cluster.
+  - **Quality-Based Pre-Filtering:** Pre-excludes low-contrast (standard deviation < 20.0) frames and dark transition frames (mean brightness < 150.0 in light-mode videos) prior to clustering, eliminating visual noise at the source.
+  - **Contrast-Based Representative Keyframe Selection:** Instead of picking the first frame in each cluster sequentially, the algorithm dynamically selects the frame with the highest standard deviation (sharpest distinction between background and notation) to avoid extracting blurry page-turn transitions.
+  - **Granular Real-Time Progress Feedback:** Provides smooth, incrementing progress percentages calculated in real-time based on the actual frame processing loops, replacing hardcoded static jumps.
 - **User-controlled PDF composition:** Let users pick which extracted frames to include in an A4 printable PDF; supports ordering and margin adjustments.
 - **Background-first architecture:** Video frame analysis and keyframe extraction run as FastAPI BackgroundTasks so the UI remains responsive during heavy processing.
 - **Smart deduplication & caching:** Uses MD5 hashing and local caching to avoid reprocessing the same uploads, saving time and compute.
