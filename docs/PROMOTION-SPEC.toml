@@ -1,0 +1,74 @@
+# PROMOTION-SPEC.toml
+# Sheet Music Extractor - ATD 포트폴리오 연동 단일 규격 (SSOT)
+#
+# 편입 프레임: Adopted Project
+#   디렉터(Mike)가 2026-06-08 ~ 06-17 단독 개발한 기존 프로젝트를
+#   ATD 허브에 편입하여 분석 / 감사 / 문서화를 수행한 사례.
+#   ATD 는 기능 구현에 참여하지 않았으며, participating_agents 에는
+#   편입 이후 실제로 수행한 기여만 기재한다.
+
+[project]
+id = "sheet-music-extractor"
+title = "Sheet Music Extractor"
+subtitle = "연주 영상에서 악보 프레임을 추출해 A4 인쇄용 PDF로 합성하는 로컬 전용 파이프라인"
+category = "AI & Automation"
+status = "Completed"
+case_study_badge = "ATD Adopted Project"
+development_time = "10일 (2026.06.08 ~ 06.17)"
+cost_reduction = "산정 제외 (개인 프로젝트)"
+lead_director = "Mike (Managing Director)"
+thumbnail = "assets/thumbnail.jpg"
+live_demo_url = ""
+repository_url = "https://github.com/tohichoi/sheet-music-extractor"
+video_demo = ""
+pdf_report = ""
+
+[[participating_agents]]
+name = "Atlas"
+role = "Chief Strategy Officer"
+contribution = "코드베이스 전수 분석, ATD 편입 파이프라인 편성, 대외 기술 케이스 스터디 저술 및 감사 결과 종합"
+
+[[participating_agents]]
+name = "Leo"
+role = "System Architect"
+contribution = "호출 그래프 및 데이터 흐름 분석, 프로젝트 아키텍처 명세서(PROJECT-DESCRIPTION.md) 기입 및 개선 백로그 도출"
+
+[[participating_agents]]
+name = "Kai"
+role = "Backend Developer"
+contribution = "삭제 엔드포인트의 비멱등 HTTP 메서드(GET) 위반을 DELETE 로 전환, 참조 무결성 및 라우트 등록 검증"
+
+[[participating_agents]]
+name = "Sora"
+role = "Creative Media Designer"
+contribution = "세로 장첩 UI 스크린샷에서 대표 썸네일(16:9)을 판단 크롭, UI 개요 및 PDF 결과물 에셋 최적화"
+
+[[participating_agents]]
+name = "Elena"
+role = "Chief Auditor"
+contribution = "무관용 정적 분석, README 서술과 실제 구현의 불일치 전수 적발, 시크릿/PII 감사 및 판정"
+
+[[participating_agents]]
+name = "Noah"
+role = "Test Optimizer"
+contribution = "편입 빌드 무결성 검증 (백엔드 임포트·프론트엔드 빌드 성공, 포트폴리오 산출물 8종 검증 통과), 자동 테스트 0건 소견 재확인 — 결과는 PROJECT-DESCRIPTION.md §4.1 마일스톤에 기록"
+
+[[metrics]]
+label = "개발 기간"
+value = "10일"
+subtext = "2026.06.08 ~ 06.17, 30 커밋 단독 수행"
+
+[[metrics]]
+label = "코드 규모"
+value = "2,224행"
+subtext = "백엔드 Python 865행 + 프론트엔드 1,359행"
+
+[[metrics]]
+label = "ATD 편입 감사"
+value = "16건 적발"
+subtext = "16건 적발, 1건 해소 · 15건 백로그 이관"
+
+[[metrics]]
+label = "핵심 파이프라인"
+value = "5단계"
+subtext = "I-frame 추출 → ROI·자동 크롭 → 특징 벡터 → 클러스터링 → PDF 조판"
