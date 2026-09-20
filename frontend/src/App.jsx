@@ -887,7 +887,7 @@ function App() {
 
     try {
       setStatus('🗑️ Deleting server data...');
-      const response = await fetch(`${API_BASE_URL}/${videoInfo.id}/delete`);
+      const response = await fetch(`${API_BASE_URL}/${videoInfo.id}`, { method: 'DELETE' });
       if (!response.ok) {
         throw new Error(`Server response error (Status: ${response.status})`);
       }
