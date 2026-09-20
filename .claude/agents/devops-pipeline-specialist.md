@@ -1,0 +1,1 @@
+/home/x/.agents-hub/adapters/claude/agents/devops-pipeline-specialist.md
