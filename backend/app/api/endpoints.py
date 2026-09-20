@@ -370,7 +370,7 @@ def export_keyframes_to_pdf(
     save_pdf(pdf_pages, pdf_path)
     return FileResponse(path=str(pdf_path), filename=download_filename.name, media_type='application/pdf')
 
-@router.get('/{video_id}/delete')
+@router.delete('/{video_id}')
 def delete_video(video_id: int, db: Session = Depends(get_db)):
     video = get_db_video(video_id, db)
 
