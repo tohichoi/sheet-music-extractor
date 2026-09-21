@@ -4,8 +4,9 @@
 # 편입 프레임: Adopted Project
 #   디렉터(Mike)가 2026-06-08 ~ 06-23 단독 개발한 기존 프로젝트를
 #   ATD 허브에 편입하여 분석 / 감사 / 문서화를 수행한 사례.
-#   ATD 는 기능 구현에 참여하지 않았으며, participating_agents 에는
-#   편입 이후 실제로 수행한 기여만 기재한다.
+#   ATD 는 최초 구현에 참여하지 않았으나, 편입 과정에서 적발한 결함 1건을
+#   소스에서 수정했으므로 development_origin 은 "mike+atd" 이다.
+#   participating_agents 에는 편입 이후 실제로 수행한 기여만 기재한다.
 
 [project]
 id = "sheet-music-extractor"
@@ -15,7 +16,7 @@ category = "AI & Automation"
 status = "Completed"
 case_study_badge = "ATD Adopted Project"
 development_time = "16일 (2026.06.08 ~ 06.23)"
-development_origin = "mike"
+development_origin = "mike+atd"
 cost_reduction = "산정 제외 (개인 프로젝트)"
 lead_director = "Mike (Managing Director)"
 thumbnail = "assets/thumbnail.jpg"
