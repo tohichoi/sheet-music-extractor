@@ -55,6 +55,42 @@ name = "Noah"
 role = "Test Optimizer"
 contribution = "편입 빌드 무결성 검증 (백엔드 임포트 및 프론트엔드 빌드 성공, 포트폴리오 산출물 검증 통과), 자동 테스트 0건 소견 확인 — 결과는 PROJECT-DESCRIPTION.md §4.1 마일스톤에 기록"
 
+[[agent_flows]]
+source = "Mike"
+target = "Atlas"
+label = "악보 추출 엔진 편입 파이프라인 편성"
+type = "direction"
+
+[[agent_flows]]
+source = "Atlas"
+target = "Leo"
+label = "악보 파싱 호출 그래프 및 데이터 아키텍처 수립"
+type = "architecture"
+
+[[agent_flows]]
+source = "Leo"
+target = "Kai"
+label = "멱등성 보장 REST API 전환 및 엔드포인트 수정"
+type = "backend"
+
+[[agent_flows]]
+source = "Leo"
+target = "Sora"
+label = "세로 장첩 UI 크롭 대표 썸네일 제작"
+type = "creative"
+
+[[agent_flows]]
+source = "Kai"
+target = "Elena"
+label = "서술-구현 일치 및 코드 품질 무관용 감사"
+type = "audit"
+
+[[agent_flows]]
+source = "Kai"
+target = "Noah"
+label = "빌드 무결성 및 단위 테스트 검증"
+type = "qa"
+
 [[metrics]]
 label = "개발 기간"
 value = "16일"
